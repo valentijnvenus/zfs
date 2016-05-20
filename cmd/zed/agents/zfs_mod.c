@@ -423,7 +423,7 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 
 	zed_log_msg(LOG_INFO, "  zpool_vdev_replace: %s with %s (%s)",
 	    fullpath, path, (ret == 0) ? "no errors" :
-	    libzfs_error_description(g_zfshdl) );
+	    libzfs_error_description(g_zfshdl));
 
 	nvlist_free(nvroot);
 }
