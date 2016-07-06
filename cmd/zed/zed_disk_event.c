@@ -169,8 +169,11 @@ dev_event_nvlist(struct udev_device *dev)
 		(void) nvlist_add_string(nvl, DEV_NAME, path);
 	if ((value = udev_device_get_devpath(dev)) != NULL)
 		(void) nvlist_add_string(nvl, DEV_PATH, value);
-	if (udev_device_get_property_value(dev, "ID_PART_ENTRY_NUMBER") != NULL)
-		(void) nvlist_add_boolean(nvl, DEV_IS_PART);
+	if ((value = udev_device_get_devtype(dev)) != NULL) {
+		if (strcmp("partition", value) == 0)
+			(void) nvlist_add_boolean(nvl, DEV_IS_PART);
+	}
+
 	if ((value = udev_device_get_sysattr_value(dev, "size")) != NULL) {
 		uint64_t numval = DEV_BSIZE;
 
