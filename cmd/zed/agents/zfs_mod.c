@@ -603,6 +603,7 @@ devid_iter(const char *devid, zfs_process_func_t func, boolean_t is_slice)
 	data.dd_prop = ZPOOL_CONFIG_DEVID;
 	data.dd_found = B_FALSE;
 	data.dd_islabeled = is_slice;
+	data.dd_new_devid = devid;
 
 	(void) zpool_iter(g_zfshdl, zfs_iter_pool, &data);
 
@@ -656,7 +657,8 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	 * disks.  For multipath devices does whole disk apply? (TBD).
 	 */
 	if (!devid_iter(devid, zfs_process_add, is_slice) && devpath != NULL)
-		(void) devphys_iter(devpath, devid, zfs_process_add, is_slice);
+		if (!is_slice)
+			(void) devphys_iter(devpath, devid, zfs_process_add, is_slice);
 
 	return (0);
 }
