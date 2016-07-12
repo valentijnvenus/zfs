@@ -222,6 +222,7 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	char rawpath[PATH_MAX], fullpath[PATH_MAX];
 	char devpath[PATH_MAX];
 	int ret;
+	char *new_devname = NULL; /* UDEV device name (like /dev/sda) */
 
 	if (nvlist_lookup_string(vdev, ZPOOL_CONFIG_PATH, &path) != 0)
 		return;
@@ -284,6 +285,7 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	 */
 	(void) snprintf(rawpath, sizeof (rawpath), "%s%s", DEV_BYPATH_PATH,
 	    physpath);
+
 	if (realpath(rawpath, devpath) == NULL) {
 		zed_log_msg(LOG_INFO, "  realpath: %s failed (%s)",
 		    rawpath, strerror(errno));
@@ -382,9 +384,13 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 			return;
 		}
 
-		(void) snprintf(devpath, sizeof (devpath), "%s%s",
-		    DEV_BYID_PATH, new_devid);
-		path = devpath;
+		if (nvlist_lookup_string(vdev, "new_devname", &new_devname)
+		    != 0) {
+			zed_log_msg(LOG_INFO, "  auto replace: missing name!");
+			return;
+		}
+
+		path = new_devname;
 	}
 
 	/*
@@ -440,6 +446,7 @@ typedef struct dev_data {
 	uint64_t		dd_pool_guid;
 	uint64_t		dd_vdev_guid;
 	const char		*dd_new_devid;
+	const char		*dd_new_devname;
 } dev_data_t;
 
 static void
@@ -496,6 +503,9 @@ zfs_iter_vdev(zpool_handle_t *zhp, nvlist_t *nvl, void *data)
 		if (dp->dd_islabeled && dp->dd_new_devid != NULL) {
 			(void) nvlist_add_string(nvl, "new_devid",
 			    dp->dd_new_devid);
+			(void) nvlist_add_string(nvl, "new_devname",
+			    dp->dd_new_devname);
+
 		}
 	}
 
@@ -573,7 +583,7 @@ zfs_iter_pool(zpool_handle_t *zhp, void *data)
  */
 static boolean_t
 devphys_iter(const char *physical, const char *devid, zfs_process_func_t func,
-    boolean_t is_slice)
+    boolean_t is_slice, char *devname)
 {
 	dev_data_t data = { 0 };
 
@@ -583,6 +593,7 @@ devphys_iter(const char *physical, const char *devid, zfs_process_func_t func,
 	data.dd_found = B_FALSE;
 	data.dd_islabeled = is_slice;
 	data.dd_new_devid = devid;	/* used by auto replace code */
+	data.dd_new_devname = devname;
 
 	(void) zpool_iter(g_zfshdl, zfs_iter_pool, &data);
 
@@ -594,7 +605,8 @@ devphys_iter(const char *physical, const char *devid, zfs_process_func_t func,
  * On Linux we can match devid directly which is always a whole disk.
  */
 static boolean_t
-devid_iter(const char *devid, zfs_process_func_t func, boolean_t is_slice)
+devid_iter(const char *devid, zfs_process_func_t func, boolean_t is_slice,
+    char *devname)
 {
 	dev_data_t data = { 0 };
 
@@ -604,6 +616,7 @@ devid_iter(const char *devid, zfs_process_func_t func, boolean_t is_slice)
 	data.dd_found = B_FALSE;
 	data.dd_islabeled = is_slice;
 	data.dd_new_devid = devid;
+	data.dd_new_devname = devname;
 
 	(void) zpool_iter(g_zfshdl, zfs_iter_pool, &data);
 
@@ -634,6 +647,7 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 {
 	char *devpath = NULL, *devid;
 	boolean_t is_slice;
+	char *devname;
 
 	/*
 	 * Expecting a devid string and an optional physical location
@@ -642,6 +656,7 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 		return (-1);
 
 	(void) nvlist_lookup_string(nvl, DEV_PHYS_PATH, &devpath);
+	(void) nvlist_lookup_string(nvl, DEV_NAME, &devname);
 
 	zed_log_msg(LOG_INFO, "zfs_deliver_add: adding %s (%s)", devid,
 	    devpath ? devpath : "NULL");
@@ -656,9 +671,11 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	 * For disks, we only want to pay attention to vdevs marked as whole
 	 * disks.  For multipath devices does whole disk apply? (TBD).
 	 */
-	if (!devid_iter(devid, zfs_process_add, is_slice) && devpath != NULL)
+	if (!devid_iter(devid, zfs_process_add, is_slice, devname) &&
+	    devpath != NULL)
 		if (!is_slice)
-			(void) devphys_iter(devpath, devid, zfs_process_add, is_slice);
+			devphys_iter(devpath, devid, zfs_process_add,
+			    is_slice, devname);
 
 	return (0);
 }
