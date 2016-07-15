@@ -1,61 +1,100 @@
-smartctl 6.4 2015-06-04 r4109 [x86_64-linux-2.6.32-573.22.1.el6.x86_64] (local build)
-Copyright (C) 2002-15, Bruce Allen, Christian Franke, www.smartmontools.org
+smartctl 6.2 2013-07-26 r3841 [x86_64-linux-3.10.0-327.10.1.el7.x86_64] (local build)
+Copyright (C) 2002-13, Bruce Allen, Christian Franke, www.smartmontools.org
 
 === START OF INFORMATION SECTION ===
-Vendor:               SEAGATE
-Product:              ST8000NM0075
-Revision:             E001
-Compliance:           SPC-4
-User Capacity:        8,001,563,222,016 bytes [8.00 TB]
-Logical block size:   512 bytes
-Physical block size:  4096 bytes
-LB provisioning type: unreported, LBPME=0, LBPRZ=0
-Rotation Rate:        7200 rpm
-Form Factor:          3.5 inches
-Logical Unit id:      0x5000c500845e2cd7
-Serial number:        <<<< hashed for privacy >>>>
-Device type:          disk
-Transport protocol:   SAS (SPL-3)
-Local Time is:        Tue Apr 12 11:19:19 2016 EDT
-SMART support is:     Available - device has SMART capability.
-SMART support is:     Enabled
-Temperature Warning:  Enabled
+Model Family:     Seagate Barracuda 7200.14 (AF)
+Device Model:     ST500DM002-1BD142
+Serial Number:    Z6EP4JNM
+LU WWN Device Id: 5 000c50 0871a85df
+Firmware Version: KC48
+User Capacity:    500,107,862,016 bytes [500 GB]
+Sector Sizes:     512 bytes logical, 4096 bytes physical
+Rotation Rate:    7200 rpm
+Device is:        In smartctl database [for details use: -P show]
+ATA Version is:   ATA8-ACS T13/1699-D revision 4
+SATA Version is:  SATA 3.0, 6.0 Gb/s (current: 6.0 Gb/s)
+Local Time is:    Fri Jun  3 11:21:44 2016 PDT
+SMART support is: Available - device has SMART capability.
+SMART support is: Enabled
 
 === START OF READ SMART DATA SECTION ===
-SMART Health Status: OK
+SMART overall-health self-assessment test result: PASSED
 
-Current Drive Temperature:     35 C
-Drive Trip Temperature:        60 C
+General SMART Values:
+Offline data collection status:  (0x82)	Offline data collection activity
+					was completed without error.
+					Auto Offline Data Collection: Enabled.
+Self-test execution status:      (   0)	The previous self-test routine completed
+					without error or no self-test has ever 
+					been run.
+Total time to complete Offline 
+data collection: 		(  617) seconds.
+Offline data collection
+capabilities: 			 (0x7b) SMART execute Offline immediate.
+					Auto Offline data collection on/off support.
+					Suspend Offline collection upon new
+					command.
+					Offline surface scan supported.
+					Self-test supported.
+					Conveyance Self-test supported.
+					Selective Self-test supported.
+SMART capabilities:            (0x0003)	Saves SMART data before entering
+					power-saving mode.
+					Supports SMART auto save timer.
+Error logging capability:        (0x01)	Error logging supported.
+					General Purpose Logging supported.
+Short self-test routine 
+recommended polling time: 	 (   1) minutes.
+Extended self-test routine
+recommended polling time: 	 (  85) minutes.
+Conveyance self-test routine
+recommended polling time: 	 (   2) minutes.
+SCT capabilities: 	       (0x303f)	SCT Status supported.
+					SCT Error Recovery Control supported.
+					SCT Feature Control supported.
+					SCT Data Table supported.
 
-Manufactured in week 47 of year 2015
-Specified cycle count over device lifetime:  10000
-Accumulated start-stop cycles:  128
-Specified load-unload count over device lifetime:  300000
-Accumulated load-unload cycles:  128
-Elements in grown defect list: 0
+SMART Attributes Data Structure revision number: 10
+Vendor Specific SMART Attributes with Thresholds:
+ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+  1 Raw_Read_Error_Rate     0x000f   114   100   006    Pre-fail  Always       -       59734408
+  3 Spin_Up_Time            0x0003   100   097   000    Pre-fail  Always       -       0
+  4 Start_Stop_Count        0x0032   100   100   020    Old_age   Always       -       43
+  5 Reallocated_Sector_Ct   0x0033   100   100   036    Pre-fail  Always       -       0
+  7 Seek_Error_Rate         0x000f   077   060   030    Pre-fail  Always       -       4346654182
+  9 Power_On_Hours          0x0032   095   095   000    Old_age   Always       -       4388
+ 10 Spin_Retry_Count        0x0013   100   100   097    Pre-fail  Always       -       0
+ 12 Power_Cycle_Count       0x0032   100   100   020    Old_age   Always       -       31
+183 Runtime_Bad_Block       0x0032   100   100   000    Old_age   Always       -       0
+184 End-to-End_Error        0x0032   100   100   099    Old_age   Always       -       0
+187 Reported_Uncorrect      0x0032   100   100   000    Old_age   Always       -       0
+188 Command_Timeout         0x0032   100   100   000    Old_age   Always       -       0 0 0
+189 High_Fly_Writes         0x003a   100   100   000    Old_age   Always       -       0
+190 Airflow_Temperature_Cel 0x0022   068   060   045    Old_age   Always       -       32 (Min/Max 30/37)
+194 Temperature_Celsius     0x0022   032   040   000    Old_age   Always       -       32 (0 9 0 0 0)
+195 Hardware_ECC_Recovered  0x001a   040   025   000    Old_age   Always       -       59734408
+197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
+198 Offline_Uncorrectable   0x0010   100   100   000    Old_age   Offline      -       0
+199 UDMA_CRC_Error_Count    0x003e   200   200   000    Old_age   Always       -       0
+240 Head_Flying_Hours       0x0000   100   253   000    Old_age   Offline      -       4389h+16m+00.490s
+241 Total_LBAs_Written      0x0000   100   253   000    Old_age   Offline      -       165408423
+242 Total_LBAs_Read         0x0000   100   253   000    Old_age   Offline      -       3534118629
 
-Vendor (Seagate) cache information
-  Blocks sent to initiator = 1398055880
-  Blocks received from initiator = 3264
-  Blocks read from cache and sent to initiator = 1155672
-  Number of read and write commands whose size <= segment size = 668
-  Number of read and write commands whose size > segment size = 0
+SMART Error Log Version: 1
+No Errors Logged
 
-Vendor (Seagate/Hitachi) factory information
-  number of hours powered up = 5.22
-  number of minutes until next internal SMART test = 27
+SMART Self-test log structure revision number 1
+Num  Test_Description    Status                  Remaining  LifeTime(hours)  LBA_of_first_error
+# 1  Short offline       Completed without error       00%         0         -
 
-Error counter log:
-           Errors Corrected by           Total   Correction     Gigabytes    Total
-               ECC          rereads/    errors   algorithm      processed    uncorrected
-           fast | delayed   rewrites  corrected  invocations   [10^9 bytes]  errors
-read:   349541392        0         0  349541392          0        715.805           0
-write:         0        0         0         0          0          0.009           0
-verify:     1184        0         0      1184          0          0.000           0
-
-Non-medium error count:        0
-
-
-[GLTSD (Global Logging Target Save Disable) set. Enable Save with '-S on']
-No self-tests have been logged
+SMART Selective self-test log data structure revision number 1
+ SPAN  MIN_LBA  MAX_LBA  CURRENT_TEST_STATUS
+    1        0        0  Not_testing
+    2        0        0  Not_testing
+    3        0        0  Not_testing
+    4        0        0  Not_testing
+    5        0        0  Not_testing
+Selective self-test flags (0x0):
+  After scanning selected spans, do NOT read-scan remainder of disk.
+If Selective self-test is pending on power-up, resume after 0 minute delay.
 

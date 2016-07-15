@@ -22,7 +22,7 @@ SMART support is:     Enabled
 Temperature Warning:  Enabled
 
 === START OF READ SMART DATA SECTION ===
-SMART Health Status: OK
+SMART Health Status: BAD
 
 Current Drive Temperature:     35 C
 Drive Trip Temperature:        60 C

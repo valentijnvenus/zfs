@@ -3,13 +3,10 @@
 #include <pthread.h>
 #include <string.h>
 #include <ctype.h>
+#include <sys/smart.h>
+#include <sys/sysmacros.h>
 
-#define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
-enum smart_type {
-	SMART_STATUS,	/* 0 for "OK" or "PASSED", non-zero for bad */
-	SMART_TEMP,	/* In Celsius */
-	SMART_VAL_COUNT, /* Always make last element */
-};
+//#define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
 
 /*
   1 Raw_Read_Error_Rate     0x000f   114   100   006    Pre-fail  Always       -       59734408
@@ -123,12 +120,6 @@ get_col_after(char *line, char *name, unsigned int col)
 	return rc;
 }
 
-
-struct smart_disk {
-	char *dev;
-	int64_t val[SMART_VAL_COUNT]; /* -1 for unused */
-};
-
 void process_line(struct smart_disk *sd, char *line)
 {
 	int i;
@@ -208,6 +199,7 @@ int get_smart(struct smart_disk *sd, unsigned int cnt) {
 	return ret;
 }
 
+#if 0
 int main(int argc, char **argv) {
 	struct smart_disk sd[] = {
 		{.dev = "sda"},
@@ -218,5 +210,6 @@ int main(int argc, char **argv) {
 	
 	return 0;
 }
+#endif
 
 
