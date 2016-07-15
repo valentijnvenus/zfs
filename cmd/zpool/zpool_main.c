@@ -1551,7 +1551,7 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 					if (smart_data.val[c] < 0) {
 						printf(" %5s", "-");
 					} else {
-						printf(" %" PRId64, smart_data.val[c]);
+						printf(" %5" PRId64, smart_data.val[c]);
 					}
 				}
 			} else {
