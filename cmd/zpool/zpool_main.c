@@ -1539,7 +1539,11 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		zfs_nicenum(vs->vs_checksum_errors, cbuf, sizeof (cbuf));
 		(void) printf(" %5s %5s %5s", rbuf, wbuf, cbuf);
 
-		smart_data.dev = (char *)name;
+		smart_data.dev = safe_malloc(MAXPATHLEN);
+		sprintf(smart_data.dev, "/dev/%s", name);
+// char *
+// strip_partition(libzfs_handle_t *hdl, char *path)
+
 		if (!children &&
 		    get_smart(&smart_data, 1) == 0) {
 			if (name_flags & VDEV_NAME_GET_SMART) {
@@ -1554,10 +1558,11 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 				if (smart_data.val[SMART_STATUS] < 0) {
 					printf(" %5s", "-");
 				} else {
-					printf(" %5s", smart_data.val[SMART_STATUS] ? "GOOD" : "BAD");
+					printf(" %5s", !smart_data.val[SMART_STATUS] ? "GOOD" : "BAD");
 				}
 			}
 		}
+		free(smart_data.dev);
 	}
 
 	if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_NOT_PRESENT,

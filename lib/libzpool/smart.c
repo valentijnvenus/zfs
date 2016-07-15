@@ -41,7 +41,8 @@ struct smart_table {
 	{"SMART overall-health self-assessment test result:", 1, SMART_STATUS},
 	{"SMART Health Status:", 1, SMART_STATUS},	/* SATA */
 	{"Current Drive Temperature:", 1, SMART_TEMP}, /* SAS */
-	{"194 Temperature_Celsius", 8, SMART_TEMP}, /* SATA */
+//	{"194 Temperature_Celsius", 8, SMART_TEMP}, /* SATA */
+	{"190 Airflow_Temperature_Cel", 8, SMART_TEMP},
 };
 
 /* Return 1 if string is a number, 0 otherwise */
@@ -74,12 +75,12 @@ get_col_after(char *line, char *name, unsigned int col)
 	char *line_cpy;
 	char *token;
 	int rc = -1;
-	printf("### Line ###\n");
-	printf("= %s\n", line);
+//	printf("### Line ###\n");
+//	printf("= %s\n", line);
 	if (strstr(line, name) == NULL) {
 		return -1;
 	} else {
-		printf("Match %s\n", name);
+//		printf("Match %s\n", name);
 	}
 
 	/* Cut off our name from the line and tokenize the rest */
@@ -89,7 +90,7 @@ get_col_after(char *line, char *name, unsigned int col)
 	if (col != 1) {
 		while (token && col) {
 			if (col == 1) {
-				printf("%d: token %s\n", col, token);
+//				printf("%d: token %s\n", col, token);
 				break;
 			}
 
@@ -97,21 +98,21 @@ get_col_after(char *line, char *name, unsigned int col)
 			token = strtok(NULL, " ");
 		}
 	}
-	printf("done iterating %s\n", token ? token : "NULL");
+//	printf("done iterating %s\n", token ? token : "NULL");
 	if (token) {
-		printf("Special case? %s\n", token);
+//		printf("Special case? %s\n", token);
 		/* Special case for SMART status */
 		if (!isnumber(token)) {
 			if (strstr(token, "OK") ||
 		    	    strstr(token, "PASSED")) {
-				printf("hit passed special case\n");
+//				printf("hit passed special case\n");
 				rc = 0;
 			} else {
-				printf("Bad status '%s'\n", token);
+//				printf("Bad status '%s'\n", token);
 				rc = 1;
 			}
 		} else {
-			printf("Got temp %s\n", token);
+//			printf("Got temp %s\n", token);
 			rc = atoll(token);
 		}
 	}
@@ -163,7 +164,7 @@ void * do_smart(void *data) {
 	}
 
 	for (i = 0; i < ARRAY_SIZE(sd->val); i++) {
-		printf("%s smart_disk_t.val[%d] = %li\n", sd->dev, i, sd->val[i]);
+//		printf("%s smart_disk_t.val[%d] = %li\n", sd->dev, i, sd->val[i]);
 	}  
 
 	free(line);
@@ -187,14 +188,14 @@ int get_smart(smart_disk_t *sd, unsigned int cnt) {
 		rc = pthread_create(&tid[i], NULL, do_smart, (void *) &sd[i]);
 		if (rc)
 			ret = rc;
-		printf("%d rc=%d\n", i, rc);
+//		printf("%d rc=%d\n", i, rc);
 	}
 
 	/* Wait for threads to finish */
 	for (i = 0; i < nspawn; i++) {
 		pthread_join(tid[i], NULL);
 	}
-	printf("Returning %d\n", ret);
+//	printf("Returning %d\n", ret);
 
 	free(tid);
 	return ret;
