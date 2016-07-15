@@ -1493,6 +1493,31 @@ find_spare(zpool_handle_t *zhp, void *data)
 	return (0);
 }
 
+void print_smart_col(smart_disk_t *data, enum smart_type type) {
+	char buf[6];
+	if (data->val[type] < 0) {
+		printf(" %6s", "-");
+		return;
+	}
+	
+
+	switch (type) {
+		case SMART_STATUS:
+			printf(" %6s", !data->val[SMART_STATUS] ? "GOOD" : "BAD");
+			break;
+		case SMART_REALC:
+		case SMART_TEMP:
+		case SMART_COR:
+		case SMART_UNCOR:
+			zfs_nicenum(data->val[type], buf, sizeof (buf));
+			printf(" %6s", buf);
+			break;
+		default:
+			printf(" %6s", "-");
+			break;
+	}
+}
+
 /*
  * Print out configuration state as requested by status_callback.
  */
@@ -5639,6 +5664,8 @@ print_dedup_stats(nvlist_t *config)
 	zpool_dump_ddt(dds, ddh);
 }
 
+
+
 /*
  * Display a summary of pool status.  Displays a summary such as:
  *
@@ -5950,10 +5977,10 @@ status_callback(zpool_handle_t *zhp, void *data)
 		    "NAME", "STATE", "READ", "WRITE", "CKSUM");
 		if (cbp->cb_name_flags & VDEV_NAME_GET_SMART) {
 			for (i=0; i < SMART_VAL_COUNT; i++) {
-				printf(" %5s", smart_header_table[i]);
+				printf(" %6s", smart_header_table[i]);
 			}
 		} else {
-			printf(" %5s", smart_header_table[SMART_STATUS]);
+			printf(" %6s", smart_header_table[SMART_STATUS]);
 		}
 		printf("\n");
 		print_status_config(zhp, zpool_get_name(zhp), nvroot,

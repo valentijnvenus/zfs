@@ -44,33 +44,17 @@ struct smart_table {
 //	{"194 Temperature_Celsius", 8, SMART_TEMP}, /* SATA */
 	{"190 Airflow_Temperature_Cel", 8, SMART_TEMP},
 	{"  5 Reallocated_Sector_Ct", 8, SMART_REALC},
+	{"read:", 4, SMART_COR},
+	{"read:", 7, SMART_UNCOR},
 };
 
 const char* smart_header_table[SMART_VAL_COUNT] = {
 	[SMART_STATUS] = "HLTH",
 	[SMART_TEMP] = "TEMP",
 	[SMART_REALC] = "REALC",
+	[SMART_COR] = "COR",
+	[SMART_UNCOR] = "UNCOR"
 };
-
-void print_smart_col(smart_disk_t *data, enum smart_type type) {
-	if (data->val[type] < 0) {
-		printf(" %5s", "-");
-		return;
-	}
-
-	switch (type) {
-		case SMART_STATUS:
-			printf(" %5s", !data->val[SMART_STATUS] ? "GOOD" : "BAD");
-			break;
-		case SMART_REALC:
-		case SMART_TEMP:
-			printf(" %5" PRId64, data->val[type]);
-			break;
-		default:
-			printf(" %5s", "-");
-			break;
-	}
-}
 
 /* Return 1 if string is a number, 0 otherwise */
 int isnumber(char *val) {
