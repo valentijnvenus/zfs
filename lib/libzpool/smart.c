@@ -45,6 +45,11 @@ struct smart_table {
 	{"190 Airflow_Temperature_Cel", 8, SMART_TEMP},
 };
 
+const char* smart_header_table[SMART_VAL_COUNT] = {
+	"HLTH",
+	"TEMP"
+};
+
 /* Return 1 if string is a number, 0 otherwise */
 int isnumber(char *val) {
 	int i;

@@ -1522,7 +1522,7 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 	if (isspare) {
 		/*
 		 * For hot spares, we use the terms 'INUSE' and 'AVAILABLE' for
-		 * online drives.
+		 *	 online drives.
 		 */
 		if (vs->vs_aux == VDEV_AUX_SPARED)
 			state = "INUSE";
@@ -5939,6 +5939,7 @@ status_callback(zpool_handle_t *zhp, void *data)
 
 	if (config != NULL) {
 		int namewidth;
+		int i;
 		uint64_t nerr;
 		nvlist_t **spares, **l2cache;
 		uint_t nspares, nl2cache;
@@ -5956,8 +5957,9 @@ status_callback(zpool_handle_t *zhp, void *data)
 		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s"), namewidth,
 		    "NAME", "STATE", "READ", "WRITE", "CKSUM");
 		if (cbp->cb_name_flags & VDEV_NAME_GET_SMART) {
-			
-			// TODO: All the columns here
+			for (i=0; i < SMART_VAL_COUNT; i++) {
+				printf(" %5s", smart_header_table[i]);
+			}
 		} else {
 			printf(" %5s", "SMART");
 		}
