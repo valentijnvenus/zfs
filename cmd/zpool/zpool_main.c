@@ -96,6 +96,27 @@ static int zpool_do_events(int, char **);
 static int zpool_do_get(int, char **);
 static int zpool_do_set(int, char **);
 
+enum smart_type {
+	SMART_STATUS = 0,
+	SMART_TEMP,
+	SMART_VAL_COUNT,
+};
+
+typedef struct {
+	char *dev;
+	int64_t val[SMART_VAL_COUNT]; /* -1 means unused */
+} smart_disk_t;
+
+static int do_smart(smart_disk_t* sd, unsigned int count) {
+	int i;
+
+	for (i = 0; i < count; i++) {
+		sd[i].val[SMART_STATUS] = 0;
+	}
+
+	return 0;
+}
+
 /*
  * These libumem hooks provide a reasonable set of defaults for the allocator's
  * debugging facilities.
@@ -1508,6 +1529,7 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 	uint64_t notpresent;
 	spare_cbdata_t cb;
 	char *state;
+	smart_disk_t smart_data;
 
 	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
 	    &child, &children) != 0)
@@ -1536,6 +1558,18 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		zfs_nicenum(vs->vs_write_errors, wbuf, sizeof (wbuf));
 		zfs_nicenum(vs->vs_checksum_errors, cbuf, sizeof (cbuf));
 		(void) printf(" %5s %5s %5s", rbuf, wbuf, cbuf);
+
+		smart_data.dev = (char *)name;
+		if (!children &&
+		    do_smart(&smart_data, 1)) {
+			if (name_flags & VDEV_NAME_GET_SMART) {
+				for (c = 0; c < SMART_VAL_COUNT; c++) {
+					printf("%" PRId64, smart_data.val[c]);
+				}
+			} else {
+				printf("%s", smart_data.val[SMART_STATUS] ? "GOOD" : "BAD");
+			}
+		}
 	}
 
 	if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_NOT_PRESENT,
@@ -5926,8 +5960,14 @@ status_callback(zpool_handle_t *zhp, void *data)
 			namewidth = 10;
 
 		(void) printf(gettext("config:\n\n"));
-		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s\n"), namewidth,
+		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s"), namewidth,
 		    "NAME", "STATE", "READ", "WRITE", "CKSUM");
+		if (cbp->cb_name_flags & VDEV_NAME_GET_SMART) {
+			// TODO: All the columns here
+		} else {
+			printf(" %5s", "SMART");
+		}
+		printf("\n");
 		print_status_config(zhp, zpool_get_name(zhp), nvroot,
 		    namewidth, 0, B_FALSE, cbp->cb_name_flags);
 
@@ -5999,6 +6039,7 @@ status_callback(zpool_handle_t *zhp, void *data)
  *	-x	Display only pools with potential problems
  *	-D	Display dedup status (undocumented)
  *	-T	Display a timestamp in date(1) or Unix format
+ *	-S	Display S.M.A.R.T. data
  *
  * Describes the health status of all pools or some subset.
  */
@@ -6012,7 +6053,7 @@ zpool_do_status(int argc, char **argv)
 	status_cbdata_t cb = { 0 };
 
 	/* check options */
-	while ((c = getopt(argc, argv, "gLPvxDT:")) != -1) {
+	while ((c = getopt(argc, argv, "gLPvxDT:S")) != -1) {
 		switch (c) {
 		case 'g':
 			cb.cb_name_flags |= VDEV_NAME_GUID;
@@ -6034,6 +6075,9 @@ zpool_do_status(int argc, char **argv)
 			break;
 		case 'T':
 			get_timestamp_arg(*optarg);
+			break;
+		case 'S':
+			cb.cb_name_flags |= VDEV_NAME_GET_SMART;
 			break;
 		case '?':
 			(void) fprintf(stderr, gettext("invalid option '%c'\n"),

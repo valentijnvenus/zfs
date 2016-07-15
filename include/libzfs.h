@@ -411,6 +411,7 @@ typedef enum {
 	VDEV_NAME_GUID		= 1 << 1,
 	VDEV_NAME_FOLLOW_LINKS	= 1 << 2,
 	VDEV_NAME_TYPE_ID	= 1 << 3,
+	VDEV_NAME_GET_SMART	= 1 << 4,
 } vdev_name_t;
 
 extern char *zpool_vdev_name(libzfs_handle_t *, zpool_handle_t *, nvlist_t *,
