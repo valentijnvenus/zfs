@@ -15,6 +15,8 @@ typedef struct smart_disk {
 
 extern const char* smart_header_table[SMART_VAL_COUNT];
 
+extern void print_smart_col(smart_disk_t *data, enum smart_type type);
+
 /* Populate smart_info.  Assumes smart_info[].dev is filled in */
 extern int get_smart(smart_disk_t *sd, unsigned int cnt);
 

@@ -1548,18 +1548,10 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		    get_smart(&smart_data, 1) == 0) {
 			if (name_flags & VDEV_NAME_GET_SMART) {
 				for (c = 0; c < SMART_VAL_COUNT; c++) {
-					if (smart_data.val[c] < 0) {
-						printf(" %5s", "-");
-					} else {
-						printf(" %5" PRId64, smart_data.val[c]);
-					}
+					print_smart_col(&smart_data, c);
 				}
 			} else {
-				if (smart_data.val[SMART_STATUS] < 0) {
-					printf(" %5s", "-");
-				} else {
-					printf(" %5s", !smart_data.val[SMART_STATUS] ? "GOOD" : "BAD");
-				}
+				print_smart_col(&smart_data, SMART_STATUS);
 			}
 		}
 		free(smart_data.dev);
