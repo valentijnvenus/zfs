@@ -53,6 +53,7 @@
 #include <math.h>
 
 #include <libzfs.h>
+#include <sys/smart.h>
 
 #include "zpool_util.h"
 #include "zfs_comutil.h"
@@ -95,27 +96,6 @@ static int zpool_do_events(int, char **);
 
 static int zpool_do_get(int, char **);
 static int zpool_do_set(int, char **);
-
-enum smart_type {
-	SMART_STATUS = 0,
-	SMART_TEMP,
-	SMART_VAL_COUNT,
-};
-
-typedef struct {
-	char *dev;
-	int64_t val[SMART_VAL_COUNT]; /* -1 means unused */
-} smart_disk_t;
-
-static int do_smart(smart_disk_t* sd, unsigned int count) {
-	int i;
-
-	for (i = 0; i < count; i++) {
-		sd[i].val[SMART_STATUS] = 0;
-	}
-
-	return 0;
-}
 
 /*
  * These libumem hooks provide a reasonable set of defaults for the allocator's
@@ -1561,7 +1541,7 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 
 		smart_data.dev = (char *)name;
 		if (!children &&
-		    do_smart(&smart_data, 1)) {
+		    get_smart(&smart_data, 1) == 0) {
 			if (name_flags & VDEV_NAME_GET_SMART) {
 				for (c = 0; c < SMART_VAL_COUNT; c++) {
 					printf("%" PRId64, smart_data.val[c]);
@@ -5963,6 +5943,7 @@ status_callback(zpool_handle_t *zhp, void *data)
 		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s"), namewidth,
 		    "NAME", "STATE", "READ", "WRITE", "CKSUM");
 		if (cbp->cb_name_flags & VDEV_NAME_GET_SMART) {
+			
 			// TODO: All the columns here
 		} else {
 			printf(" %5s", "SMART");

@@ -7,11 +7,12 @@ enum smart_type {
 	SMART_VAL_COUNT, /* Always make last element */
 };
 
-struct smart_disk {
+typedef struct smart_disk {
 	char *dev;
 	int64_t val[SMART_VAL_COUNT]; /* -1 for unused */
-};
+} smart_disk_t;
+
 /* Populate smart_info.  Assumes smart_info[].dev is filled in */
-extern int get_smart(struct smart_disk *sd, unsigned int cnt);
+extern int get_smart(smart_disk_t *sd, unsigned int cnt);
 
 #endif
