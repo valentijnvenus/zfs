@@ -4,6 +4,7 @@
 enum smart_type {
 	SMART_STATUS,	/* 0 for "OK" or "PASSED", non-zero for bad */
 	SMART_TEMP,	/* In Celsius */
+	SMART_REALC,	/* Reallocated sectors */
 	SMART_VAL_COUNT, /* Always make last element */
 };
 

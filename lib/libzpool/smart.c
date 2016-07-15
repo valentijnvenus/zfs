@@ -43,11 +43,13 @@ struct smart_table {
 	{"Current Drive Temperature:", 1, SMART_TEMP}, /* SAS */
 //	{"194 Temperature_Celsius", 8, SMART_TEMP}, /* SATA */
 	{"190 Airflow_Temperature_Cel", 8, SMART_TEMP},
+	{"  5 Reallocated_Sector_Ct", 8, SMART_REALC},
 };
 
 const char* smart_header_table[SMART_VAL_COUNT] = {
-	"HLTH",
-	"TEMP"
+	[SMART_STATUS] = "HLTH",
+	[SMART_TEMP] = "TEMP",
+	[SMART_REALC] = "REALC",
 };
 
 /* Return 1 if string is a number, 0 otherwise */
