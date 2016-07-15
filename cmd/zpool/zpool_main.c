@@ -5953,7 +5953,7 @@ status_callback(zpool_handle_t *zhp, void *data)
 				printf(" %5s", smart_header_table[i]);
 			}
 		} else {
-			printf(" %5s", "SMART");
+			printf(" %5s", smart_header_table[SMART_STATUS]);
 		}
 		printf("\n");
 		print_status_config(zhp, zpool_get_name(zhp), nvroot,
