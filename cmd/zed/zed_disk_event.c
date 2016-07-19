@@ -85,28 +85,58 @@ zed_udev_event(const char *class, const char *subclass, nvlist_t *nvl)
  * Get the persistent device id string (describes "what")
  *
  * used by auto-{online,expand,replace}
+ *
+ * Basically, we want to find the "scsi-353333330000007d0" part of
+ * 	/dev/disk/by-id/scsi-353333330000007d0
+ *
+ * To do that, go though all the DEVLINKS devices looking for the right
+ * one.  The right one will have "/dev/disk/by-id" and also the device's
+ * ID in the name. For example:
+ *
+ * Normal disk:
+ * DEVNAME=/dev/sdc
+ * ID_SERIAL=0QEMU_QEMU_HARDDISK_drive-scsi0-0-0-1
+ * DEVLINKS=/dev/block/8:32 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi0-0-0-1
+ *     /dev/disk/by-path/pci-0000:00:08.0-virtio-pci-virtio3-scsi-0:0:0:1
+ * (return "scsi-0QEMU_QEMU_HARDDISK_drive-scsi0-0-0-1")
+ *
+ * Multipath device:
+ * DEVNAME=/dev/dm-4
+ * DM_UUID=mpath-353333330000007d0
+ * DEVLINKS=/dev/mapper/mpatha /dev/disk/by-id/dm-name-mpatha
+ *     /dev/disk/by-id/dm-uuid-mpath-353333330000007d0 /dev/block/253:4
+ * (return mpath-353333330000007d0)
  */
 static int
 zfs_device_get_devid(struct udev_device *dev, char *bufptr, size_t buflen)
 {
 	struct udev_list_entry *entry;
-	const char *bus;
-	char devbyid[64];
+	const char *id;
 
-	bus = udev_device_get_property_value(dev, "ID_BUS");
-	if (bus == NULL)
-		return (ENODATA);
+	id = udev_device_get_property_value(dev, "ID_BUS");
+	if (!id) {
+		/* Maybe it's a multipath device, try DM_UUID */
+		id = udev_device_get_property_value(dev, "DM_UUID");
+		if (!id) {
+			/* couldn't get ID_BUS or DM_UUID */
+			return (ENODATA);
+		}
+	}
 
-	/*
-	 * locate the bus specific by-id link
-	 */
-	(void) snprintf(devbyid, sizeof (devbyid), "%s%s-", DEV_BYID_PATH, bus);
 	entry = udev_device_get_devlinks_list_entry(dev);
 	while (entry != NULL) {
 		const char *name;
 
 		name = udev_list_entry_get_name(entry);
-		if (strncmp(name, devbyid, strlen(devbyid)) == 0) {
+
+		/*
+		 * First look to see that the string starts with
+		 * /dev/disk/by-id/.  Then check to see if the string contains
+		 * our unique ID.  If it does, then return the part after
+		 * /dev/disk/by-id/
+		 */
+		if ((strncmp(name, DEV_BYID_PATH, strlen(DEV_BYID_PATH)) == 0)
+		    && strstr(name, id)) {
 			name += strlen(DEV_BYID_PATH);
 			strncpy(bufptr, name, buflen);
 			return (0);
@@ -216,7 +246,7 @@ zed_udev_monitor(void *arg)
 
 	while (1) {
 		struct udev_device *dev;
-		const char *action, *bus, *type, *part, *size;
+		const char *action, *type, *part, *size;
 		const char *class, *subclass;
 		nvlist_t *nvl;
 		boolean_t is_zfs = B_FALSE;
@@ -276,16 +306,6 @@ zed_udev_monitor(void *arg)
 			continue;
 		}
 
-		/*
-		 * if blkid probe didn't find ZFS, we'll need a devid
-		 */
-		bus = udev_device_get_property_value(dev, "ID_BUS");
-		if (!is_zfs && bus == NULL) {
-			zed_log_msg(LOG_INFO, "zed_udev_monitor: %s no bus key",
-			    udev_device_get_devnode(dev));
-			udev_device_unref(dev);
-			continue;
-		}
 
 		action = udev_device_get_action(dev);
 		if (strcmp(action, "add") == 0) {
@@ -302,6 +322,32 @@ zed_udev_monitor(void *arg)
 			    action);
 			udev_device_unref(dev);
 			continue;
+		}
+
+		/*
+		 * Special case for multipath devices
+		 *
+		 * When a multipath device is created, udev reports the
+		 * following:
+		 *
+		 * 1. "create" event of the dm device for the multipath device
+		 *     (like /dev/dm-3).
+		 * 2. "change" event to create the actual multipath device
+		 *     symlink (like /dev/mapper/mpatha).  The event also
+		 *     passes back the relevant DM vars we care about, like
+		 *     DM_UUID.
+		 * 3. Another "change" event identical to #2 (that we ignore).
+		 *
+		 * To get the behavior we want, we treat the "change" event
+		 * in #2 as a "create" event; as if "/dev/mapper/mpatha" was
+		 * a new disk being added.
+		 */
+		if (strcmp(class, EC_DEV_STATUS) == 0 &&
+		    udev_device_get_property_value(dev, "DM_UUID") &&
+		    udev_device_get_property_value(dev, "MPATH_SBIN_PATH")) {
+			/* Fake a MP "change" event to look like a "create" */
+			class = EC_DEV_ADD;
+			subclass = ESC_DISK;
 		}
 
 		if ((nvl = dev_event_nvlist(dev)) != NULL) {
