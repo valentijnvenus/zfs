@@ -244,6 +244,7 @@ extern "C" {
 #define	DEV_PATH		"path"
 #define	DEV_IS_PART		"is_slice"
 #define	DEV_SIZE		"dev_size"
+#define DEV_LINKS		"dev_links"
 #endif /* __linux__ */
 
 #define	EV_V1			1

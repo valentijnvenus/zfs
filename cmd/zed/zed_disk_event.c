@@ -203,6 +203,8 @@ dev_event_nvlist(struct udev_device *dev)
 		if (strcmp("partition", value) == 0)
 			(void) nvlist_add_boolean(nvl, DEV_IS_PART);
 	}
+	value = udev_device_get_property_value(dev, "DEVLINKS");
+	nvlist_add_string(nvl, DEV_LINKS, value);
 
 	if ((value = udev_device_get_sysattr_value(dev, "size")) != NULL) {
 		uint64_t numval = DEV_BSIZE;

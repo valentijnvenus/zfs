@@ -260,9 +260,9 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	    ZFS_ONLINE_CHECKREMOVE | ZFS_ONLINE_UNSPARE, &newstate) == 0 &&
 	    (newstate == VDEV_STATE_HEALTHY ||
 	    newstate == VDEV_STATE_DEGRADED)) {
-		zed_log_msg(LOG_INFO, "  zpool_vdev_online: vdev %s is %s",
+		zed_log_msg(LOG_INFO, "  zpool_vdev_online: vdev %s is %s %d",
 		    fullpath, (newstate == VDEV_STATE_HEALTHY) ?
-		    "HEALTHY" : "DEGRADED");
+		    "HEALTHY" : "DEGRADED", newstate);
 		return;
 	}
 
@@ -453,9 +453,12 @@ static void
 zfs_iter_vdev(zpool_handle_t *zhp, nvlist_t *nvl, void *data)
 {
 	dev_data_t *dp = data;
-	char *path;
+	char *path = NULL;
 	uint_t c, children;
 	nvlist_t **child;
+	char *name = NULL;
+
+	nvlist_lookup_string(nvl, ZPOOL_CONFIG_PATH, &name);
 
 	/*
 	 * First iterate over any children.
@@ -492,9 +495,9 @@ zfs_iter_vdev(zpool_handle_t *zhp, nvlist_t *nvl, void *data)
 		 * the dp->dd_compare value.
 		 */
 		if (nvlist_lookup_string(nvl, dp->dd_prop, &path) != 0 ||
-		    strcmp(dp->dd_compare, path) != 0) {
+		    strcmp(dp->dd_compare, path) != 0)
 			return;
-		}
+
 		zed_log_msg(LOG_INFO, "  zfs_iter_vdev: matched %s on %s",
 		    dp->dd_prop, path);
 		dp->dd_found = B_TRUE;
@@ -612,7 +615,8 @@ devid_iter(const char *devid, zfs_process_func_t func, boolean_t is_slice,
 
 	data.dd_compare = devid;
 	data.dd_func = func;
-	data.dd_prop = ZPOOL_CONFIG_DEVID;
+//	data.dd_prop = ZPOOL_CONFIG_DEVID;
+	data.dd_prop = ZPOOL_CONFIG_PATH;
 	data.dd_found = B_FALSE;
 	data.dd_islabeled = is_slice;
 	data.dd_new_devid = devid;
@@ -648,6 +652,7 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	char *devpath = NULL, *devid;
 	boolean_t is_slice;
 	char *devname;
+	char *devlinks = NULL, *cpy, *token;
 
 	/*
 	 * Expecting a devid string and an optional physical location
@@ -657,6 +662,7 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 
 	(void) nvlist_lookup_string(nvl, DEV_PHYS_PATH, &devpath);
 	(void) nvlist_lookup_string(nvl, DEV_NAME, &devname);
+	(void) nvlist_lookup_string(nvl, DEV_LINKS, &devlinks);
 
 	zed_log_msg(LOG_INFO, "zfs_deliver_add: adding %s (%s)", devid,
 	    devpath ? devpath : "NULL");
@@ -664,19 +670,26 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	is_slice = (nvlist_lookup_boolean(nvl, DEV_IS_PART) == 0);
 
 	/*
-	 * Iterate over all vdevs looking for a match in the folllowing order:
-	 * 1. ZPOOL_CONFIG_DEVID (identifies the unique disk)
-	 * 2. ZPOOL_CONFIG_PHYS_PATH (identifies disk physical location).
-	 *
-	 * For disks, we only want to pay attention to vdevs marked as whole
-	 * disks.  For multipath devices does whole disk apply? (TBD).
+	 * Iterate though all the devices in udev's DEVLINKS variable looking
+	 * for a match to a vdev.
 	 */
-	if (!devid_iter(devid, zfs_process_add, is_slice, devname) &&
-	    devpath != NULL)
-		if (!is_slice)
-			devphys_iter(devpath, devid, zfs_process_add,
-			    is_slice, devname);
+	cpy = strdup(devlinks);
+	token = strtok(cpy, " ");
+	while (token) {
+		zed_log_msg(LOG_INFO, "%s: token: %s\n", __func__, token);
+		if (devid_iter(token, zfs_process_add, is_slice, token))
+			goto end;	/* matched */
 
+		token = strtok(NULL, " ");
+	}
+
+	/* We can't find a match in DEVLINKS.  Try using the physical path. */
+	if (!is_slice)
+		devphys_iter(devpath, devid, zfs_process_add,
+		    is_slice, devname);
+
+end:
+	free(cpy);
 	return (0);
 }
 
