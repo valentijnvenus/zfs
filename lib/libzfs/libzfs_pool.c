@@ -41,6 +41,7 @@
 #include <sys/vtoc.h>
 #include <sys/zfs_ioctl.h>
 #include <dlfcn.h>
+#include <libdevmapper.h>
 
 #include "zfs_namecheck.h"
 #include "zfs_prop.h"
@@ -4302,4 +4303,176 @@ zpool_label_disk(libzfs_handle_t *hdl, zpool_handle_t *zhp, char *name)
 	}
 
 	return (0);
+}
+
+static void libdevmapper_dummy_log(int level, const char *file, int line,
+    int dm_errno_or_class, const char *f, ...) {}
+
+/* Disable libdevmapper error logging */
+static void disable_libdevmapper_errors(void) {
+	dm_log_with_errno_init(libdevmapper_dummy_log);
+}
+/* Enable libdevmapper error logging */
+static void enable_libdevmapper_errors(void) {
+	dm_log_with_errno_init(NULL);
+}
+
+/*
+ * Allocate and return the underlying device name for a device mapper device.
+ * If a device mapper device maps to multiple devices, return the first device.
+ *
+ * For example, dm_name = "/dev/dm-0" could return "/dev/sda"
+ *
+ * dm_name should include the "/dev[/mapper]" prefix.
+ *
+ * Returns device name, or NULL on error or no match.  If dm_name is not a DM
+ * device then return NULL.
+ *
+ * NOTE: The returned name string must be *freed*.
+ */
+static char * dm_get_underlying_path(char *dm_name)
+{
+	char *tmp, *name = NULL;
+	struct dm_task *dmt = NULL;
+	struct dm_tree *dt = NULL;
+	struct dm_tree_node *root, *child;
+	void *handle = NULL;
+	struct dm_info info;
+	const struct dm_info *child_info;
+	int size;
+
+	/*
+	 * libdevmapper tutorial
+	 *
+	 * libdevmapper is basically a fancy wrapper for its ioctls.  You
+	 * create a "task", fill in the needed info to the task (fill in the
+	 * ioctl fields), then run the task (call the ioctl).
+	 */
+	/* First we need the major/minor number for our DM device */
+	if (!(dmt = dm_task_create(DM_DEVICE_INFO)))
+		goto end;
+
+	/*
+	 * Lookup the name in libdevmapper.  Disable errors, since dm_name
+	 * may be the name of a non-DM device and we just want to
+	 * harmlessly error out. Otherwise it prints an annoying
+	 * "Device not found" to stderr
+	 */
+	disable_libdevmapper_errors();
+	if (!dm_task_set_name(dmt, dm_name)) {
+		enable_libdevmapper_errors();
+		goto end;
+	}
+	enable_libdevmapper_errors();
+
+	if (!dm_task_run(dmt))
+		goto end;
+
+	/* Get DM device's major/minor */
+	if (!dm_task_get_info(dmt, &info))
+		goto end;
+
+	/* We have major/minor number.  Lookup the dm device's children */
+	if (!(dt = dm_tree_create()))
+		goto end;
+
+	/* We add the device into the tree and it's children get populated */
+	if (!dm_tree_add_dev(dt, info.major, info.minor))
+		goto end;
+
+	if (!(root = dm_tree_find_node(dt, 0, 0)))
+		goto end;
+
+        if (!(child = dm_tree_next_child(&handle, root, 1)))
+		goto end;
+
+	/* Get child's major/minor numbers */
+        if (!(child_info = dm_tree_node_get_info(child)))
+		goto end;
+
+	/* Got childs major/minor numbers.  Translate it into a device */
+	size = snprintf(NULL, 0, "/dev/block/%d:%d",
+	    child_info->major, child_info->minor);
+	/* +1 for '\0' terminator */
+
+	if (!(tmp = malloc(size)))
+		goto end;
+
+	sprintf(tmp, "/dev/block/%d:%d", child_info->major, child_info->minor);
+
+	/* Further translate /dev/block/ name into the normal name */
+	name = realpath(tmp, NULL);
+	free(tmp);
+
+end:
+	dm_task_destroy(dmt);
+	dm_tree_free(dt);
+	return name;
+}
+
+/*
+ * Lookup the underlying device for a device name
+ *
+ * Often you'll have a symlink to a device, a partition device,
+ * or a multipath device, and want to look up the underlying device.
+ * This function returns the underlying device name.  If the device
+ * name is already the underlying device, then just return the same
+ * name.  If the device is a DM device with multiple underlying devices
+ * then return the first one.
+ *
+ * For example:
+ *
+ * 1. /dev/disk/by-id/ata-QEMU_HARDDISK_QM00001 -> ../../sda
+ * dev_name:	/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001
+ * returns:	/dev/sda
+ *
+ * 2. /dev/mapper/mpatha (made up of /dev/sda and /dev/sdb)
+ * dev_name:	/dev/mapper/mpatha
+ * returns:	/dev/sda (first device)
+ *
+ * 3. /dev/sda (already the underlying device)
+ * dev_name:	/dev/sda
+ * returns:	/dev/sda
+ *
+ * 4. /dev/dm-3 (mapped to /dev/sda)
+ * dev_name:	/dev/dm-3
+ * returns:	/dev/sda
+ *
+ * 5. /dev/disk/by-id/scsi-0QEMU_drive-scsi0-0-0-0-part9 -> ../../sdb9
+ * dev_name:	/dev/disk/by-id/scsi-0QEMU_drive-scsi0-0-0-0-part9
+ * returns:	/dev/sdb9
+ *
+ * 6. /dev/disk/by-uuid/5df030cf-3cd9-46e4-8e99-3ccb462a4e9a -> ../dev/sda2
+ * dev_name:	/dev/disk/by-uuid/5df030cf-3cd9-46e4-8e99-3ccb462a4e9a
+ * returns:	/dev/sda2
+ *
+ * Returns underlying device name, or NULL on error or no match.
+ *
+ * NOTE: The returned name string must be *freed*.
+ */
+char *get_underlying_path(libzfs_handle_t *hdl, char *dev_name)
+{
+	char *name = NULL;
+	char *tmp;
+	fprintf(stderr, "%s: begin\n", __func__);
+
+
+	if (!dev_name)
+		return NULL;
+
+	tmp = dm_get_underlying_path(dev_name);
+
+	/* dev_name not a DM device, so just un-symlinkized it */
+	if (!tmp)
+		tmp = realpath(dev_name, NULL);
+	fprintf(stderr, "%s: about to strip partition, %s\n", __func__, tmp ? tmp : "NULL");
+
+	if (tmp) {
+		name = strip_partition(hdl, tmp);
+		free(tmp);
+	}
+
+	fprintf(stderr, "%s: done, return %s\n", __func__, name ? name : "NULL");
+
+	return name;
 }

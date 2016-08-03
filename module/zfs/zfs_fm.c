@@ -886,6 +886,13 @@ zfs_post_common(spa_t *spa, vdev_t *vd, const char *name)
 		    FM_EREPORT_PAYLOAD_ZFS_VDEV_GUID, vd->vdev_guid));
 		VERIFY0(nvlist_add_uint64(resource,
 		    FM_EREPORT_PAYLOAD_ZFS_VDEV_STATE, vd->vdev_state));
+		if (vd->vdev_path)
+			VERIFY0(nvlist_add_string(resource,
+			    FM_EREPORT_PAYLOAD_ZFS_VDEV_PATH, vd->vdev_path));
+
+		if (vd->vdev_devid)
+			VERIFY0(nvlist_add_string(resource,
+			    FM_EREPORT_PAYLOAD_ZFS_VDEV_DEVID, vd->vdev_devid));
 	}
 
 	zfs_zevent_post(resource, NULL, zfs_zevent_post_cb);

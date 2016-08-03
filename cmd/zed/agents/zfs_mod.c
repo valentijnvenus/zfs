@@ -174,6 +174,44 @@ zfs_strip_partition(char *path)
 	}
 }
 
+/* TODO: DO WE NEED THIS? */
+/*
+ * Convenience function see if two device names are the same underlying
+ * device.
+ *
+ * Resolve symlinks to see if two devices names are really the same device.
+ * For example, let's say you had all these devices:
+ *
+ * /dev/dm-4
+ * /dev/mapper/mpathb -> ../dm-4
+ * /dev/block/253:4 -> ../dm-4
+ * /dev/disk/by-id/dm-name-mpathb -> ../../dm-4
+ *
+ * Passing any of these two names will return a match since they all point
+ * to the same underlying device (/dev/dm-4).
+ *
+ * Returns 1 if the devs are the same, 0 if not.
+ */
+int
+zfs_devs_are_same(char *name0, char *name1) {
+	char *path0, *path1;
+	int rc = 0;
+
+        path0 = realpath(name0, NULL);
+        path1 = realpath(name1, NULL);
+	if (!path0 || !path1)
+		goto end;
+
+	if (strcmp(path0, path1) != 0)
+		rc = 1; /* match */
+
+end:
+	free(path0);
+	free(path1);
+
+	return rc;
+}
+
 /*
  * Two stage replace on Linux
  * since we get disk notifications
