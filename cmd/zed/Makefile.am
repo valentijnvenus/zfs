@@ -6,7 +6,13 @@ DEFAULT_INCLUDES += \
 
 EXTRA_DIST = zed.d/README
 
-sbin_PROGRAMS = zed
+sbin_PROGRAMS = zed underlying_dev
+
+underlying_dev_SOURCES = \
+	underlying_dev.c
+
+underlying_dev_LDADD = \
+	$(top_builddir)/lib/libzfs/libzfs.la
 
 zed_SOURCES = \
 	zed.c \

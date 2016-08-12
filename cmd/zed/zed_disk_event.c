@@ -95,10 +95,10 @@ zed_udev_event(const char *class, const char *subclass, nvlist_t *nvl)
  *
  * Normal disk:
  * DEVNAME=/dev/sdc
- * ID_SERIAL=0QEMU_QEMU_HARDDISK_drive-scsi0-0-0-1
- * DEVLINKS=/dev/block/8:32 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi0-0-0-1
+ * ID_SERIAL=QEMU_HARDDISK_drive-scsi0-0-0-1
+ * DEVLINKS=/dev/block/8:32 /dev/disk/by-id/scsi_QEMU_HARDDISK_drive-scsi0-0-0-1
  *     /dev/disk/by-path/pci-0000:00:08.0-virtio-pci-virtio3-scsi-0:0:0:1
- * (return "scsi-0QEMU_QEMU_HARDDISK_drive-scsi0-0-0-1")
+ * (return "scsi_QEMU_HARDDISK_drive-scsi0-0-0-1")
  *
  * Multipath device:
  * DEVNAME=/dev/dm-4
@@ -135,8 +135,8 @@ zfs_device_get_devid(struct udev_device *dev, char *bufptr, size_t buflen)
 		 * our unique ID.  If it does, then return the part after
 		 * /dev/disk/by-id/
 		 */
-		if ((strncmp(name, DEV_BYID_PATH, strlen(DEV_BYID_PATH)) == 0)
-		    && strstr(name, id)) {
+		if ((strncmp(name, DEV_BYID_PATH, strlen(DEV_BYID_PATH))
+		    == 0) && strstr(name, id)) {
 			name += strlen(DEV_BYID_PATH);
 			strncpy(bufptr, name, buflen);
 			return (0);

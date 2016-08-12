@@ -4330,7 +4330,7 @@ static void enable_libdevmapper_errors(void) {
  *
  * NOTE: The returned name string must be *freed*.
  */
-static char * dm_get_underlying_path(char *dm_name)
+static char * dm_get_underlying_dev(char *dm_name)
 {
 	char *tmp, *name = NULL;
 	struct dm_task *dmt = NULL;
@@ -4340,6 +4340,13 @@ static char * dm_get_underlying_path(char *dm_name)
 	struct dm_info info;
 	const struct dm_info *child_info;
 	int size;
+
+	/*
+	 * Disable libdevmapper errors.  It's entirely possible user is not
+	 * running devmapper, or that dm_name is not a devmapper device.
+	 * Thats totally ok, we will just harmlessly and silently return NULL.
+	 */
+	disable_libdevmapper_errors();
 
 	/*
 	 * libdevmapper tutorial
@@ -4352,18 +4359,12 @@ static char * dm_get_underlying_path(char *dm_name)
 	if (!(dmt = dm_task_create(DM_DEVICE_INFO)))
 		goto end;
 
-	/*
-	 * Lookup the name in libdevmapper.  Disable errors, since dm_name
-	 * may be the name of a non-DM device and we just want to
-	 * harmlessly error out. Otherwise it prints an annoying
-	 * "Device not found" to stderr
-	 */
-	disable_libdevmapper_errors();
+
+	/* Lookup the name in libdevmapper */
 	if (!dm_task_set_name(dmt, dm_name)) {
 		enable_libdevmapper_errors();
 		goto end;
 	}
-	enable_libdevmapper_errors();
 
 	if (!dm_task_run(dmt))
 		goto end;
@@ -4383,11 +4384,11 @@ static char * dm_get_underlying_path(char *dm_name)
 	if (!(root = dm_tree_find_node(dt, 0, 0)))
 		goto end;
 
-        if (!(child = dm_tree_next_child(&handle, root, 1)))
+	if (!(child = dm_tree_next_child(&handle, root, 1)))
 		goto end;
 
 	/* Get child's major/minor numbers */
-        if (!(child_info = dm_tree_node_get_info(child)))
+	if (!(child_info = dm_tree_node_get_info(child)))
 		goto end;
 
 	/* Got childs major/minor numbers.  Translate it into a device */
@@ -4405,9 +4406,13 @@ static char * dm_get_underlying_path(char *dm_name)
 	free(tmp);
 
 end:
-	dm_task_destroy(dmt);
-	dm_tree_free(dt);
-	return name;
+	if (dmt)
+		dm_task_destroy(dmt);
+	if (dt)
+		dm_tree_free(dt);
+	enable_libdevmapper_errors();
+
+	return (name);
 }
 
 /*
@@ -4440,39 +4445,35 @@ end:
  *
  * 5. /dev/disk/by-id/scsi-0QEMU_drive-scsi0-0-0-0-part9 -> ../../sdb9
  * dev_name:	/dev/disk/by-id/scsi-0QEMU_drive-scsi0-0-0-0-part9
- * returns:	/dev/sdb9
+ * returns:	/dev/sdb
  *
  * 6. /dev/disk/by-uuid/5df030cf-3cd9-46e4-8e99-3ccb462a4e9a -> ../dev/sda2
  * dev_name:	/dev/disk/by-uuid/5df030cf-3cd9-46e4-8e99-3ccb462a4e9a
- * returns:	/dev/sda2
+ * returns:	/dev/sda
  *
  * Returns underlying device name, or NULL on error or no match.
  *
  * NOTE: The returned name string must be *freed*.
  */
-char *get_underlying_path(libzfs_handle_t *hdl, char *dev_name)
+char *
+get_underlying_dev(libzfs_handle_t *hdl, char *dev_name)
 {
 	char *name = NULL;
 	char *tmp;
-	fprintf(stderr, "%s: begin\n", __func__);
-
 
 	if (!dev_name)
-		return NULL;
+		return (NULL);
 
-	tmp = dm_get_underlying_path(dev_name);
+	tmp = dm_get_underlying_dev(dev_name);
 
 	/* dev_name not a DM device, so just un-symlinkized it */
 	if (!tmp)
 		tmp = realpath(dev_name, NULL);
-	fprintf(stderr, "%s: about to strip partition, %s\n", __func__, tmp ? tmp : "NULL");
 
 	if (tmp) {
 		name = strip_partition(hdl, tmp);
 		free(tmp);
 	}
 
-	fprintf(stderr, "%s: done, return %s\n", __func__, name ? name : "NULL");
-
-	return name;
+	return (name);
 }

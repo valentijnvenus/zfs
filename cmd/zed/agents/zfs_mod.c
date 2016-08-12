@@ -197,8 +197,8 @@ zfs_devs_are_same(char *name0, char *name1) {
 	char *path0, *path1;
 	int rc = 0;
 
-        path0 = realpath(name0, NULL);
-        path1 = realpath(name1, NULL);
+	path0 = realpath(name0, NULL);
+	path1 = realpath(name1, NULL);
 	if (!path0 || !path1)
 		goto end;
 
@@ -209,7 +209,7 @@ end:
 	free(path0);
 	free(path1);
 
-	return rc;
+	return (rc);
 }
 
 /*
@@ -702,9 +702,6 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	(void) nvlist_lookup_string(nvl, DEV_NAME, &devname);
 	(void) nvlist_lookup_string(nvl, DEV_LINKS, &devlinks);
 
-	zed_log_msg(LOG_INFO, "zfs_deliver_add: adding %s (%s)", devid,
-	    devpath ? devpath : "NULL");
-
 	is_slice = (nvlist_lookup_boolean(nvl, DEV_IS_PART) == 0);
 
 	/*
@@ -714,7 +711,6 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	cpy = strdup(devlinks);
 	token = strtok(cpy, " ");
 	while (token) {
-		zed_log_msg(LOG_INFO, "%s: token: %s\n", __func__, token);
 		if (devid_iter(token, zfs_process_add, is_slice, token))
 			goto end;	/* matched */
 

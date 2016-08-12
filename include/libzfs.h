@@ -282,7 +282,7 @@ extern nvlist_t *zpool_find_vdev_by_physpath(zpool_handle_t *, const char *,
 extern int zpool_label_disk_wait(char *, int);
 extern int zpool_label_disk(libzfs_handle_t *, zpool_handle_t *, char *);
 
-char *get_underlying_path(libzfs_handle_t *hdl, char *dev_name);
+char *get_underlying_dev(libzfs_handle_t *hdl, char *dev_name);
 
 
 /*

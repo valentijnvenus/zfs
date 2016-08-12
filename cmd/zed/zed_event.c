@@ -821,35 +821,6 @@ _zed_event_add_time_strings(uint64_t eid, zed_strings_t *zsp, int64_t etime[])
 	}
 }
 
-/* TODO: DO WE NEED THIS */
-static void
-_zed_event_add_underlying_path(uint64_t eid, zed_strings_t *zsp,
-    libzfs_handle_t *hdl, nvlist_t *nvl)
-{
-	char *tmp = NULL;
-	char *upath = NULL;
-	zed_log_msg(LOG_INFO, "%s: begin\n", __func__);
-//
-//                    FM_EREPORT_PAYLOAD_ZFS_VDEV_PATH, vd->vdev_path));
-//                    FM_EREPORT_PAYLOAD_ZFS_VDEV_DEVID, vd->vdev_devid));
-
-	if (nvlist_lookup_string(nvl, FM_EREPORT_PAYLOAD_ZFS_VDEV_PATH, &tmp) != 0) {
-		zed_log_msg(LOG_INFO, "%s: checking path, %s\n", __func__, tmp ? tmp : "NULL");
-		upath = get_underlying_path(hdl, tmp);
-		zed_log_msg(LOG_INFO, "%s: path %s\n", __func__, upath ? upath : "NULL");
-
-		if (upath) {
-	                _zed_event_add_var(eid, zsp, ZEVENT_VAR_PREFIX,
-			    "UNDERLYING_PATH",
-			    "%s", upath);
-			free(upath);
-		}
-	} else {
-		zed_log_msg(LOG_INFO, "%s: no config path\n", __func__);
-	}
-
-}
-
 static void
 _zed_internal_event(const char *class, nvlist_t *nvl)
 {
@@ -918,8 +889,6 @@ zed_event_service(struct zed_conf *zcp)
 
 
 		zsp = zed_strings_create();
-
-		_zed_event_add_underlying_path(eid, zsp, zcp->zfs_hdl, nvl);
 
 		nvp = NULL;
 		while ((nvp = nvlist_next_nvpair(nvl, nvp)))
