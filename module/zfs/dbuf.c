@@ -248,12 +248,12 @@ dbuf_find_bonus(objset_t *os, uint64_t object)
 	dmu_buf_impl_t *db = NULL;
 
 	if (dnode_hold(os, object, FTAG, &dn) == 0) {
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 		if (dn->dn_bonus != NULL) {
 			db = dn->dn_bonus;
 			mutex_enter(&db->db_mtx);
 		}
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		dnode_rele(dn, FTAG);
 	}
 	return (db);
@@ -802,7 +802,7 @@ dbuf_verify(dmu_buf_impl_t *db)
 			 * have the struct_rwlock.  XXX indblksz no longer
 			 * grows.  safe to do this now?
 			 */
-			if (RW_WRITE_HELD(&dn->dn_struct_rwlock)) {
+			if (RRM_WRITE_HELD(&dn->dn_struct_rwlock)) {
 				ASSERT3P(db->db_blkptr, ==,
 				    ((blkptr_t *)db->db_parent->db.db_data +
 				    db->db_blkid % epb));
@@ -1009,7 +1009,7 @@ dbuf_read_impl(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 	dn = DB_DNODE(db);
 	ASSERT(!refcount_is_zero(&db->db_holds));
 	/* We need the struct_rwlock to prevent db_blkptr from changing. */
-	ASSERT(RW_LOCK_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_LOCK_HELD(&dn->dn_struct_rwlock));
 	ASSERT(MUTEX_HELD(&db->db_mtx));
 	ASSERT(db->db_state == DB_UNCACHED);
 	ASSERT(db->db_buf == NULL);
@@ -1180,7 +1180,7 @@ dbuf_read(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 	DB_DNODE_ENTER(db);
 	dn = DB_DNODE(db);
 	if ((flags & DB_RF_HAVESTRUCT) == 0)
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 
 	prefetch = db->db_level == 0 && db->db_blkid != DMU_BONUS_BLKID &&
 	    (flags & DB_RF_NOPREFETCH) == 0 && dn != NULL &&
@@ -1204,7 +1204,7 @@ dbuf_read(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 		if (prefetch)
 			dmu_zfetch(&dn->dn_zfetch, db->db_blkid, 1, B_TRUE);
 		if ((flags & DB_RF_HAVESTRUCT) == 0)
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		DB_DNODE_EXIT(db);
 	} else if (db->db_state == DB_UNCACHED) {
 		spa_t *spa = dn->dn_objset->os_spa;
@@ -1223,7 +1223,7 @@ dbuf_read(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 			dmu_zfetch(&dn->dn_zfetch, db->db_blkid, 1, B_TRUE);
 
 		if ((flags & DB_RF_HAVESTRUCT) == 0)
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		DB_DNODE_EXIT(db);
 
 		if (!err && need_wait)
@@ -1241,7 +1241,7 @@ dbuf_read(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 		if (prefetch)
 			dmu_zfetch(&dn->dn_zfetch, db->db_blkid, 1, B_TRUE);
 		if ((flags & DB_RF_HAVESTRUCT) == 0)
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		DB_DNODE_EXIT(db);
 
 		/* Skip the wait per the caller's request. */
@@ -1446,7 +1446,7 @@ dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx)
 	dn = DB_DNODE(db);
 
 	/* XXX does *this* func really need the lock? */
-	ASSERT(RW_WRITE_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_WRITE_HELD(&dn->dn_struct_rwlock));
 
 	/*
 	 * This call to dmu_buf_will_dirty() with the dn_struct_rwlock held
@@ -1742,8 +1742,8 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 	 * while we are running, so we want to acquire it before
 	 * looking at db_blkptr.
 	 */
-	if (!RW_WRITE_HELD(&dn->dn_struct_rwlock)) {
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	if (!RRM_WRITE_HELD(&dn->dn_struct_rwlock)) {
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 		drop_struct_lock = TRUE;
 	}
 
@@ -1774,7 +1774,7 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 			parent_held = TRUE;
 		}
 		if (drop_struct_lock)
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		ASSERT3U(db->db_level+1, ==, parent->db_level);
 		di = dbuf_dirty(parent, tx);
 		if (parent_held)
@@ -1804,7 +1804,7 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 		list_insert_tail(&dn->dn_dirty_records[txgoff], dr);
 		mutex_exit(&dn->dn_mtx);
 		if (drop_struct_lock)
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	}
 
 	dnode_setdirty(dn, tx);
@@ -1938,7 +1938,7 @@ dmu_buf_will_dirty(dmu_buf_t *db_fake, dmu_tx_t *tx)
 	mutex_exit(&db->db_mtx);
 
 	DB_DNODE_ENTER(db);
-	if (RW_WRITE_HELD(&DB_DNODE(db)->dn_struct_rwlock))
+	if (RRM_WRITE_HELD(&DB_DNODE(db)->dn_struct_rwlock))
 		rf |= DB_RF_HAVESTRUCT;
 	DB_DNODE_EXIT(db);
 	(void) dbuf_read(db, NULL, rf);
@@ -2226,7 +2226,7 @@ dbuf_findbp(dnode_t *dn, int level, uint64_t blkid, int fail_sparse,
 	epbs = dn->dn_indblkshift - SPA_BLKPTRSHIFT;
 
 	ASSERT3U(level * epbs, <, 64);
-	ASSERT(RW_LOCK_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_LOCK_HELD(&dn->dn_struct_rwlock));
 	/*
 	 * This assertion shouldn't trip as long as the max indirect block size
 	 * is less than 1M.  The reason for this is that up to that point,
@@ -2299,7 +2299,7 @@ dbuf_create(dnode_t *dn, uint8_t level, uint64_t blkid,
 	objset_t *os = dn->dn_objset;
 	dmu_buf_impl_t *db, *odb;
 
-	ASSERT(RW_LOCK_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_LOCK_HELD(&dn->dn_struct_rwlock));
 	ASSERT(dn->dn_type != DMU_OT_NONE);
 
 	db = kmem_cache_alloc(dbuf_kmem_cache, KM_SLEEP);
@@ -2501,7 +2501,7 @@ dbuf_prefetch(dnode_t *dn, int64_t level, uint64_t blkid, zio_priority_t prio,
 	dsl_dataset_t *ds;
 
 	ASSERT(blkid != DMU_BONUS_BLKID);
-	ASSERT(RW_LOCK_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_LOCK_HELD(&dn->dn_struct_rwlock));
 
 	if (blkid > dn->dn_maxblkid)
 		return;
@@ -2623,7 +2623,7 @@ __dbuf_hold_impl(struct dbuf_hold_impl_data *dh)
 	dh->dh_parent = NULL;
 
 	ASSERT(dh->dh_blkid != DMU_BONUS_BLKID);
-	ASSERT(RW_LOCK_HELD(&dh->dh_dn->dn_struct_rwlock));
+	ASSERT(RRM_LOCK_HELD(&dh->dh_dn->dn_struct_rwlock));
 	ASSERT3U(dh->dh_dn->dn_nlevels, >, dh->dh_level);
 
 	*(dh->dh_dbp) = NULL;
@@ -2781,7 +2781,7 @@ dbuf_hold_level(dnode_t *dn, int level, uint64_t blkid, void *tag)
 void
 dbuf_create_bonus(dnode_t *dn)
 {
-	ASSERT(RW_WRITE_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_WRITE_HELD(&dn->dn_struct_rwlock));
 
 	ASSERT(dn->dn_bonus == NULL);
 	dn->dn_bonus = dbuf_create(dn, 0, DMU_BONUS_BLKID, dn->dn_dbuf, NULL);
@@ -2802,9 +2802,9 @@ dbuf_spill_set_blksz(dmu_buf_t *db_fake, uint64_t blksz, dmu_tx_t *tx)
 
 	DB_DNODE_ENTER(db);
 	dn = DB_DNODE(db);
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	dbuf_new_size(db, blksz, tx);
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	DB_DNODE_EXIT(db);
 
 	return (0);
@@ -3102,10 +3102,10 @@ dbuf_check_blkptr(dnode_t *dn, dmu_buf_impl_t *db)
 		ASSERT(dn->dn_phys->dn_nlevels > 1);
 		if (parent == NULL) {
 			mutex_exit(&db->db_mtx);
-			rw_enter(&dn->dn_struct_rwlock, RW_READER);
+			rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 			parent = dbuf_hold_level(dn, db->db_level + 1,
 			    db->db_blkid >> epbs, db);
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 			mutex_enter(&db->db_mtx);
 			db->db_parent = parent;
 		}
@@ -3451,9 +3451,9 @@ dbuf_write_ready(zio_t *zio, arc_buf_t *buf, void *vdb)
 
 	mutex_exit(&db->db_mtx);
 
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	*db->db_blkptr = *bp;
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 /* ARGSUSED */
@@ -3494,9 +3494,9 @@ dbuf_write_children_ready(zio_t *zio, arc_buf_t *buf, void *vdb)
 		 * anybody from reading the blocks we're about to
 		 * zero out.
 		 */
-		rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 		bzero(db->db.db_data, db->db.db_size);
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	}
 	DB_DNODE_EXIT(db);
 }

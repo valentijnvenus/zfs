@@ -36,6 +36,7 @@
 #include <sys/dmu_zfetch.h>
 #include <sys/zrlock.h>
 #include <sys/multilist.h>
+#include <sys/rrwlock.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -200,7 +201,8 @@ struct dnode {
 	 * Protects the structure of the dnode, including the number of levels
 	 * of indirection (dn_nlevels), dn_maxblkid, and dn_next_*
 	 */
-	krwlock_t dn_struct_rwlock;
+	rrmlock_t dn_struct_rwlock;
+	
 
 	/* Our link on dn_objset->os_dnodes list; protected by os_lock.  */
 	list_node_t dn_link;

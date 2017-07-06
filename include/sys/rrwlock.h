@@ -102,6 +102,7 @@ void rrm_enter_read(rrmlock_t *rrl, void *tag);
 void rrm_enter_write(rrmlock_t *rrl);
 void rrm_exit(rrmlock_t *rrl, void *tag);
 boolean_t rrm_held(rrmlock_t *rrl, krw_t rw);
+int rrm_tryenter(rrmlock_t *rrl, krw_t rw, void *tag);
 
 #define	RRM_READ_HELD(x)	rrm_held(x, RW_READER)
 #define	RRM_WRITE_HELD(x)	rrm_held(x, RW_WRITER)

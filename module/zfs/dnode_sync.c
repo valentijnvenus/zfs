@@ -46,11 +46,11 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 	int new_level = dn->dn_next_nlevels[txgoff];
 	int i;
 
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 
 	/* this dnode can't be paged out because it's dirty */
 	ASSERT(dn->dn_phys->dn_type != DMU_OT_NONE);
-	ASSERT(RW_WRITE_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_WRITE_HELD(&dn->dn_struct_rwlock));
 	ASSERT(new_level > 1 && dn->dn_phys->dn_nlevels > 0);
 
 	db = dbuf_hold_level(dn, dn->dn_phys->dn_nlevels, 0, FTAG);
@@ -107,7 +107,7 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 
 	dbuf_rele(db, FTAG);
 
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 static void
@@ -184,10 +184,10 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
 
 		ASSERT(db->db_level == 1);
 
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 		err = dbuf_hold_impl(dn, db->db_level-1,
 		    (db->db_blkid << epbs) + i, TRUE, FALSE, FTAG, &child);
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		if (err == ENOENT)
 			continue;
 		ASSERT(err == 0);
@@ -282,10 +282,10 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 		for (id = start; id <= end; id++, bp++) {
 			if (BP_IS_HOLE(bp))
 				continue;
-			rw_enter(&dn->dn_struct_rwlock, RW_READER);
+			rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 			VERIFY0(dbuf_hold_impl(dn, db->db_level - 1,
 			    id, TRUE, FALSE, FTAG, &subdb));
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 			ASSERT3P(bp, ==, subdb->db_blkptr);
 
 			free_children(subdb, blkid, nblks, tx);
@@ -304,9 +304,9 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 		 * anybody from reading the blocks we're about to
 		 * zero out.
 		 */
-		rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 		bzero(db->db.db_data, db->db.db_size);
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		free_blocks(dn, db->db_blkptr, 1, tx);
 	} else {
 		/*
@@ -362,10 +362,10 @@ dnode_sync_free_range_impl(dnode_t *dn, uint64_t blkid, uint64_t nblks,
 		for (i = start; i <= end; i++, bp++) {
 			if (BP_IS_HOLE(bp))
 				continue;
-			rw_enter(&dn->dn_struct_rwlock, RW_READER);
+			rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 			VERIFY0(dbuf_hold_impl(dn, dnlevel - 1, i,
 			    TRUE, FALSE, FTAG, &db));
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 			free_children(db, blkid, nblks, tx);
 			dbuf_rele(db, FTAG);
@@ -449,7 +449,7 @@ dnode_evict_dbufs(dnode_t *dn)
 void
 dnode_evict_bonus(dnode_t *dn)
 {
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	if (dn->dn_bonus != NULL) {
 		if (refcount_is_zero(&dn->dn_bonus->db_holds)) {
 			mutex_enter(&dn->dn_bonus->db_mtx);
@@ -459,7 +459,7 @@ dnode_evict_bonus(dnode_t *dn)
 			dn->dn_bonus->db_pending_evict = TRUE;
 		}
 	}
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 static void

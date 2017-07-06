@@ -95,7 +95,7 @@ dnode_cons(void *arg, void *unused, int kmflag)
 	dnode_t *dn = arg;
 	int i;
 
-	rw_init(&dn->dn_struct_rwlock, NULL, RW_NOLOCKDEP, NULL);
+	rrm_init(&dn->dn_struct_rwlock, 0);
 	mutex_init(&dn->dn_mtx, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&dn->dn_dbufs_mtx, NULL, MUTEX_DEFAULT, NULL);
 	cv_init(&dn->dn_notxholds, NULL, CV_DEFAULT, NULL);
@@ -155,7 +155,7 @@ dnode_dest(void *arg, void *unused)
 	int i;
 	dnode_t *dn = arg;
 
-	rw_destroy(&dn->dn_struct_rwlock);
+	rrm_destroy(&dn->dn_struct_rwlock);
 	mutex_destroy(&dn->dn_mtx);
 	mutex_destroy(&dn->dn_dbufs_mtx);
 	cv_destroy(&dn->dn_notxholds);
@@ -228,8 +228,8 @@ dnode_verify(dnode_t *dn)
 	if (!(zfs_flags & ZFS_DEBUG_DNODE_VERIFY))
 		return;
 
-	if (!RW_WRITE_HELD(&dn->dn_struct_rwlock)) {
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	if (!RRM_WRITE_HELD(&dn->dn_struct_rwlock)) {
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 		drop_struct_lock = TRUE;
 	}
 	if (dn->dn_phys->dn_type != DMU_OT_NONE || dn->dn_allocated_txg != 0) {
@@ -264,7 +264,7 @@ dnode_verify(dnode_t *dn)
 		    (dn->dn_object % (dn->dn_dbuf->db.db_size >> DNODE_SHIFT)));
 	}
 	if (drop_struct_lock)
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 #endif
 
@@ -345,7 +345,7 @@ dnode_setbonuslen(dnode_t *dn, int newsize, dmu_tx_t *tx)
 	ASSERT3U(refcount_count(&dn->dn_holds), >=, 1);
 
 	dnode_setdirty(dn, tx);
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	ASSERT3U(newsize, <=, DN_SLOTS_TO_BONUSLEN(dn->dn_num_slots) -
 	    (dn->dn_nblkptr-1) * sizeof (blkptr_t));
 	dn->dn_bonuslen = newsize;
@@ -353,7 +353,7 @@ dnode_setbonuslen(dnode_t *dn, int newsize, dmu_tx_t *tx)
 		dn->dn_next_bonuslen[tx->tx_txg & TXG_MASK] = DN_ZERO_BONUSLEN;
 	else
 		dn->dn_next_bonuslen[tx->tx_txg & TXG_MASK] = dn->dn_bonuslen;
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 void
@@ -361,17 +361,17 @@ dnode_setbonus_type(dnode_t *dn, dmu_object_type_t newtype, dmu_tx_t *tx)
 {
 	ASSERT3U(refcount_count(&dn->dn_holds), >=, 1);
 	dnode_setdirty(dn, tx);
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	dn->dn_bonustype = newtype;
 	dn->dn_next_bonustype[tx->tx_txg & TXG_MASK] = dn->dn_bonustype;
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 void
 dnode_rm_spill(dnode_t *dn, dmu_tx_t *tx)
 {
 	ASSERT3U(refcount_count(&dn->dn_holds), >=, 1);
-	ASSERT(RW_WRITE_HELD(&dn->dn_struct_rwlock));
+	ASSERT(RRM_WRITE_HELD(&dn->dn_struct_rwlock));
 	dnode_setdirty(dn, tx);
 	dn->dn_rm_spillblk[tx->tx_txg&TXG_MASK] = DN_KILL_SPILLBLK;
 	dn->dn_have_spill = B_FALSE;
@@ -638,7 +638,7 @@ dnode_reallocate(dnode_t *dn, dmu_object_type_t ot, int blocksize,
 
 	dn->dn_id_flags = 0;
 
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	dnode_setdirty(dn, tx);
 	if (dn->dn_datablksz != blocksize) {
 		/* change blocksize */
@@ -665,7 +665,7 @@ dnode_reallocate(dnode_t *dn, dmu_object_type_t ot, int blocksize,
 		dbuf_rm_spill(dn, tx);
 		dnode_rm_spill(dn, tx);
 	}
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	/* change type */
 	dn->dn_type = ot;
@@ -710,7 +710,7 @@ dnode_move_impl(dnode_t *odn, dnode_t *ndn)
 {
 	int i;
 
-	ASSERT(!RW_LOCK_HELD(&odn->dn_struct_rwlock));
+	ASSERT(!RRM_LOCK_HELD(&odn->dn_struct_rwlock));
 	ASSERT(MUTEX_NOT_HELD(&odn->dn_mtx));
 	ASSERT(MUTEX_NOT_HELD(&odn->dn_dbufs_mtx));
 	ASSERT(!RW_LOCK_HELD(&odn->dn_zfetch.zf_rwlock));
@@ -930,7 +930,7 @@ dnode_move(void *buf, void *newbuf, size_t size, void *arg)
 	 * dbuf, and we can't compare hold and dbuf counts while the add is in
 	 * progress.
 	 */
-	if (!rw_tryenter(&odn->dn_struct_rwlock, RW_WRITER)) {
+	if (!rrm_tryenter(&odn->dn_struct_rwlock, RW_WRITER, FTAG)) {
 		zrl_exit(&odn->dn_handle->dnh_zrlock);
 		mutex_exit(&os->os_lock);
 		DNODE_STAT_ADD(dnode_move_stats.dms_dnode_rwlock);
@@ -956,14 +956,14 @@ dnode_move(void *buf, void *newbuf, size_t size, void *arg)
 	    uint32_t, dbufs);
 
 	if (refcount > dbufs) {
-		rw_exit(&odn->dn_struct_rwlock);
+		rrm_exit(&odn->dn_struct_rwlock, FTAG);
 		zrl_exit(&odn->dn_handle->dnh_zrlock);
 		mutex_exit(&os->os_lock);
 		DNODE_STAT_ADD(dnode_move_stats.dms_dnode_active);
 		return (KMEM_CBRC_LATER);
 	}
 
-	rw_exit(&odn->dn_struct_rwlock);
+	rrm_exit(&odn->dn_struct_rwlock, FTAG);
 
 	/*
 	 * At this point we know that anyone with a hold on the dnode is not
@@ -1234,8 +1234,8 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 
 	DNODE_VERIFY(mdn);
 
-	if (!RW_WRITE_HELD(&mdn->dn_struct_rwlock)) {
-		rw_enter(&mdn->dn_struct_rwlock, RW_READER);
+	if (!RRM_WRITE_HELD(&mdn->dn_struct_rwlock)) {
+		rrm_enter(&mdn->dn_struct_rwlock, RW_READER, FTAG);
 		drop_struct_lock = TRUE;
 	}
 
@@ -1243,7 +1243,7 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 
 	db = dbuf_hold(mdn, blk, FTAG);
 	if (drop_struct_lock)
-		rw_exit(&mdn->dn_struct_rwlock);
+		rrm_exit(&mdn->dn_struct_rwlock, FTAG);
 	if (db == NULL)
 		return (SET_ERROR(EIO));
 	err = dbuf_read(db, NULL, DB_RF_CANFAIL);
@@ -1498,7 +1498,7 @@ dnode_set_blksz(dnode_t *dn, uint64_t size, int ibs, dmu_tx_t *tx)
 	if (size >> SPA_MINBLOCKSHIFT == dn->dn_datablkszsec && ibs == 0)
 		return (0);
 
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 
 	/* Check for any allocated blocks beyond the first */
 	if (dn->dn_maxblkid != 0)
@@ -1536,11 +1536,11 @@ dnode_set_blksz(dnode_t *dn, uint64_t size, int ibs, dmu_tx_t *tx)
 	if (db)
 		dbuf_rele(db, FTAG);
 
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	return (0);
 
 fail:
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	return (SET_ERROR(ENOTSUP));
 }
 
@@ -1555,8 +1555,8 @@ dnode_new_blkid(dnode_t *dn, uint64_t blkid, dmu_tx_t *tx, boolean_t have_read)
 	ASSERT(blkid != DMU_BONUS_BLKID);
 
 	ASSERT(have_read ?
-	    RW_READ_HELD(&dn->dn_struct_rwlock) :
-	    RW_WRITE_HELD(&dn->dn_struct_rwlock));
+	    RRM_READ_HELD(&dn->dn_struct_rwlock) :
+	    RRM_WRITE_HELD(&dn->dn_struct_rwlock));
 
 	/*
 	 * if we have a read-lock, check to see if we need to do any work
@@ -1566,10 +1566,13 @@ dnode_new_blkid(dnode_t *dn, uint64_t blkid, dmu_tx_t *tx, boolean_t have_read)
 		if (blkid <= dn->dn_maxblkid)
 			return;
 
-		if (!rw_tryupgrade(&dn->dn_struct_rwlock)) {
-			rw_exit(&dn->dn_struct_rwlock);
-			rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
-		}
+//		if (!rw_tryupgrade(&dn->dn_struct_rwlock)) {
+//			rw_exit(&dn->dn_struct_rwlock);
+//			rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+//		}
+
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
+		rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	}
 
 	if (blkid <= dn->dn_maxblkid)
@@ -1625,8 +1628,11 @@ dnode_new_blkid(dnode_t *dn, uint64_t blkid, dmu_tx_t *tx, boolean_t have_read)
 	}
 
 out:
-	if (have_read)
-		rw_downgrade(&dn->dn_struct_rwlock);
+	if (have_read) {
+		// rw_downgrade(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
+	}
 }
 
 static void
@@ -1648,7 +1654,7 @@ dnode_free_range(dnode_t *dn, uint64_t off, uint64_t len, dmu_tx_t *tx)
 	int trunc = FALSE;
 	int epbs;
 
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	blksz = dn->dn_datablksz;
 	blkshift = dn->dn_datablkshift;
 	epbs = dn->dn_indblkshift - SPA_BLKPTRSHIFT;
@@ -1701,9 +1707,9 @@ dnode_free_range(dnode_t *dn, uint64_t off, uint64_t len, dmu_tx_t *tx)
 			/* don't dirty if it isn't on disk and isn't dirty */
 			if (db->db_last_dirty ||
 			    (db->db_blkptr && !BP_IS_HOLE(db->db_blkptr))) {
-				rw_exit(&dn->dn_struct_rwlock);
+				rrm_exit(&dn->dn_struct_rwlock, FTAG);
 				dmu_buf_will_dirty(&db->db, tx);
-				rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+				rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 				data = db->db.db_data;
 				bzero(data + blkoff, head);
 			}
@@ -1737,9 +1743,9 @@ dnode_free_range(dnode_t *dn, uint64_t off, uint64_t len, dmu_tx_t *tx)
 			/* don't dirty if not on disk and not dirty */
 			if (db->db_last_dirty ||
 			    (db->db_blkptr && !BP_IS_HOLE(db->db_blkptr))) {
-				rw_exit(&dn->dn_struct_rwlock);
+				rrm_exit(&dn->dn_struct_rwlock, FTAG);
 				dmu_buf_will_dirty(&db->db, tx);
-				rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+				rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 				bzero(db->db.db_data, tail);
 			}
 			dbuf_rele(db, FTAG);
@@ -1847,7 +1853,7 @@ done:
 	dnode_setdirty(dn, tx);
 out:
 
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 static boolean_t
@@ -2100,7 +2106,7 @@ dnode_next_offset(dnode_t *dn, int flags, uint64_t *offset,
 	int error = 0;
 
 	if (!(flags & DNODE_FIND_HAVELOCK))
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 
 	if (dn->dn_phys->dn_nlevels == 0) {
 		error = SET_ERROR(ESRCH);
@@ -2145,7 +2151,7 @@ dnode_next_offset(dnode_t *dn, int flags, uint64_t *offset,
 		error = SET_ERROR(ESRCH);
 out:
 	if (!(flags & DNODE_FIND_HAVELOCK))
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	return (error);
 }

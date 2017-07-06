@@ -166,7 +166,7 @@ dmu_object_alloc_dnsize(objset_t *os, dmu_object_type_t ot, int blocksize,
 		(void) dnode_hold_impl(os, object, DNODE_MUST_BE_FREE,
 		    dn_slots, FTAG, &dn);
 		if (dn != NULL) {
-			rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+			rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 			/*
 			 * Another thread could have allocated it; check
 			 * again now that we have the struct lock.
@@ -174,7 +174,7 @@ dmu_object_alloc_dnsize(objset_t *os, dmu_object_type_t ot, int blocksize,
 			if (dn->dn_type == DMU_OT_NONE) {
 				dnode_allocate(dn, ot, blocksize, 0,
 				    bonustype, bonuslen, dn_slots, tx);
-				rw_exit(&dn->dn_struct_rwlock);
+				rrm_exit(&dn->dn_struct_rwlock, FTAG);
 				dmu_tx_add_new_object(tx, dn);
 				dnode_rele(dn, FTAG);
 
@@ -182,7 +182,7 @@ dmu_object_alloc_dnsize(objset_t *os, dmu_object_type_t ot, int blocksize,
 				    object + dn_slots);
 				return (object);
 			}
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 			dnode_rele(dn, FTAG);
 		}
 

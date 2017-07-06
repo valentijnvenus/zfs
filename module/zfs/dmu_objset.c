@@ -1733,7 +1733,7 @@ dmu_objset_userquota_get_ids(dnode_t *dn, boolean_t before, dmu_tx_t *tx)
 	} else if (dn->dn_bonuslen == 0 && dn->dn_bonustype == DMU_OT_SA) {
 			int rf = 0;
 
-			if (RW_WRITE_HELD(&dn->dn_struct_rwlock))
+			if (RRM_WRITE_HELD(&dn->dn_struct_rwlock))
 				rf |= DB_RF_HAVESTRUCT;
 			error = dmu_spill_hold_by_dnode(dn,
 			    rf | DB_RF_MUST_SUCCEED,

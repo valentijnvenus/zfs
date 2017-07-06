@@ -393,3 +393,13 @@ rrm_held(rrmlock_t *rrl, krw_t rw)
 		return (rrw_held(&rrl->locks[RRM_TD_LOCK()], rw));
 	}
 }
+
+int
+rrm_tryenter(rrmlock_t *rrl, krw_t rw, void *tag)
+{
+	if (rrm_held(rrl, rw))
+		return (0);
+
+	rrm_enter(rrl, rw, tag);
+	return (1);
+}

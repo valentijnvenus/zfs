@@ -150,9 +150,9 @@ dmu_buf_hold_noread_by_dnode(dnode_t *dn, uint64_t offset,
 	dmu_buf_impl_t *db;
 
 	blkid = dbuf_whichblock(dn, 0, offset);
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	db = dbuf_hold(dn, blkid, tag);
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	if (db == NULL) {
 		*dbp = NULL;
@@ -175,9 +175,9 @@ dmu_buf_hold_noread(objset_t *os, uint64_t object, uint64_t offset,
 	if (err)
 		return (err);
 	blkid = dbuf_whichblock(dn, 0, offset);
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	db = dbuf_hold(dn, blkid, tag);
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	dnode_rele(dn, FTAG);
 
 	if (db == NULL) {
@@ -310,9 +310,9 @@ dmu_rm_spill(objset_t *os, uint64_t object, dmu_tx_t *tx)
 
 	error = dnode_hold(os, object, FTAG, &dn);
 	dbuf_rm_spill(dn, tx);
-	rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 	dnode_rm_spill(dn, tx);
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	dnode_rele(dn, FTAG);
 	return (error);
 }
@@ -331,10 +331,10 @@ dmu_bonus_hold(objset_t *os, uint64_t object, void *tag, dmu_buf_t **dbp)
 	if (error)
 		return (error);
 
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	if (dn->dn_bonus == NULL) {
-		rw_exit(&dn->dn_struct_rwlock);
-		rw_enter(&dn->dn_struct_rwlock, RW_WRITER);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
+		rrm_enter(&dn->dn_struct_rwlock, RW_WRITER, FTAG);
 		if (dn->dn_bonus == NULL)
 			dbuf_create_bonus(dn);
 	}
@@ -351,7 +351,7 @@ dmu_bonus_hold(objset_t *os, uint64_t object, void *tag, dmu_buf_t **dbp)
 	 * hold and incrementing the dbuf count to ensure that dnode_move() sees
 	 * a dnode hold for every dbuf.
 	 */
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	dnode_rele(dn, FTAG);
 
@@ -377,12 +377,12 @@ dmu_spill_hold_by_dnode(dnode_t *dn, uint32_t flags, void *tag, dmu_buf_t **dbp)
 	int err;
 
 	if ((flags & DB_RF_HAVESTRUCT) == 0)
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 
 	db = dbuf_hold(dn, DMU_SPILL_BLKID, tag);
 
 	if ((flags & DB_RF_HAVESTRUCT) == 0)
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	if (db == NULL) {
 		*dbp = NULL;
@@ -411,7 +411,7 @@ dmu_spill_hold_existing(dmu_buf_t *bonus, void *tag, dmu_buf_t **dbp)
 	if (spa_version(dn->dn_objset->os_spa) < SPA_VERSION_SA) {
 		err = SET_ERROR(EINVAL);
 	} else {
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 
 		if (!dn->dn_have_spill) {
 			err = SET_ERROR(ENOENT);
@@ -420,7 +420,7 @@ dmu_spill_hold_existing(dmu_buf_t *bonus, void *tag, dmu_buf_t **dbp)
 			    DB_RF_HAVESTRUCT | DB_RF_CANFAIL, tag, dbp);
 		}
 
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	}
 
 	DB_DNODE_EXIT(db);
@@ -468,7 +468,7 @@ dmu_buf_hold_array_by_dnode(dnode_t *dn, uint64_t offset, uint64_t length,
 	dbuf_flags = DB_RF_CANFAIL | DB_RF_NEVERWAIT | DB_RF_HAVESTRUCT |
 	    DB_RF_NOPREFETCH;
 
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	if (dn->dn_datablkshift) {
 		int blkshift = dn->dn_datablkshift;
 		nblks = (P2ROUNDUP(offset + length, 1ULL << blkshift) -
@@ -481,7 +481,7 @@ dmu_buf_hold_array_by_dnode(dnode_t *dn, uint64_t offset, uint64_t length,
 			    os_dsl_dataset->ds_object,
 			    (longlong_t)dn->dn_object, dn->dn_datablksz,
 			    (longlong_t)offset, (longlong_t)length);
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 			return (SET_ERROR(EIO));
 		}
 		nblks = 1;
@@ -493,7 +493,7 @@ dmu_buf_hold_array_by_dnode(dnode_t *dn, uint64_t offset, uint64_t length,
 	for (i = 0; i < nblks; i++) {
 		dmu_buf_impl_t *db = dbuf_hold(dn, blkid + i, tag);
 		if (db == NULL) {
-			rw_exit(&dn->dn_struct_rwlock);
+			rrm_exit(&dn->dn_struct_rwlock, FTAG);
 			dmu_buf_rele_array(dbp, nblks, tag);
 			zio_nowait(zio);
 			return (SET_ERROR(EIO));
@@ -510,7 +510,7 @@ dmu_buf_hold_array_by_dnode(dnode_t *dn, uint64_t offset, uint64_t length,
 		dmu_zfetch(&dn->dn_zfetch, blkid, nblks,
 		    read && DNODE_IS_CACHEABLE(dn));
 	}
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	/* wait for async i/o */
 	err = zio_wait(zio);
@@ -618,11 +618,11 @@ dmu_prefetch(objset_t *os, uint64_t object, int64_t level, uint64_t offset,
 		if (object == 0 || object >= DN_MAX_OBJECT)
 			return;
 
-		rw_enter(&dn->dn_struct_rwlock, RW_READER);
+		rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 		blkid = dbuf_whichblock(dn, level,
 		    object * sizeof (dnode_phys_t));
 		dbuf_prefetch(dn, level, blkid, pri, 0);
-		rw_exit(&dn->dn_struct_rwlock);
+		rrm_exit(&dn->dn_struct_rwlock, FTAG);
 		return;
 	}
 
@@ -635,7 +635,7 @@ dmu_prefetch(objset_t *os, uint64_t object, int64_t level, uint64_t offset,
 	if (err != 0)
 		return;
 
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	/*
 	 * offset + len - 1 is the last byte we want to prefetch for, and offset
 	 * is the first.  Then dbuf_whichblk(dn, level, off + len - 1) is the
@@ -658,7 +658,7 @@ dmu_prefetch(objset_t *os, uint64_t object, int64_t level, uint64_t offset,
 			dbuf_prefetch(dn, level, blkid + i, pri, 0);
 	}
 
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 
 	dnode_rele(dn, FTAG);
 }
@@ -1479,10 +1479,10 @@ dmu_assign_arcbuf(dmu_buf_t *handle, uint64_t offset, arc_buf_t *buf,
 
 	DB_DNODE_ENTER(dbuf);
 	dn = DB_DNODE(dbuf);
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	blkid = dbuf_whichblock(dn, 0, offset);
 	VERIFY((db = dbuf_hold(dn, blkid, FTAG)) != NULL);
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 	DB_DNODE_EXIT(dbuf);
 
 	/*
@@ -2067,13 +2067,13 @@ __dmu_object_info_from_dnode(dnode_t *dn, dmu_object_info_t *doi)
 void
 dmu_object_info_from_dnode(dnode_t *dn, dmu_object_info_t *doi)
 {
-	rw_enter(&dn->dn_struct_rwlock, RW_READER);
+	rrm_enter(&dn->dn_struct_rwlock, RW_READER, FTAG);
 	mutex_enter(&dn->dn_mtx);
 
 	__dmu_object_info_from_dnode(dn, doi);
 
 	mutex_exit(&dn->dn_mtx);
-	rw_exit(&dn->dn_struct_rwlock);
+	rrm_exit(&dn->dn_struct_rwlock, FTAG);
 }
 
 /*
