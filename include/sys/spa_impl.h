@@ -290,6 +290,12 @@ struct spa {
 	refcount_t	spa_refcount;		/* number of opens */
 
 	taskq_t		*spa_upgrade_taskq;	/* taskq for upgrade jobs */
+
+	/*
+	 * Total number of straggler speculative IOs forced to complete
+	 * in spa_sync().
+	 */
+	uint64_t	spa_forced_spec;
 };
 
 extern char *spa_config_path;

@@ -494,6 +494,9 @@ struct zio {
 
 	/* Taskq dispatching state */
 	taskq_ent_t	io_tqent;
+
+	/* Current txg at zio creation time */
+	uint64_t	io_creation_txg;
 };
 
 extern int zio_bookmark_compare(const void *, const void *);
@@ -637,7 +640,7 @@ extern void zfs_ereport_finish_checksum(zio_cksum_report_t *report,
 extern void zfs_ereport_free_checksum(zio_cksum_report_t *report);
 
 /* If we have the good data in hand, this function can be used */
-extern void zfs_ereport_post_checksum(spa_t *spa, vdev_t *vd,
+extern int zfs_ereport_post_checksum(spa_t *spa, vdev_t *vd,
     zbookmark_phys_t *zb, struct zio *zio, uint64_t offset, uint64_t length,
     const abd_t *good_data, const abd_t *bad_data, struct zio_bad_cksum *info);
 
@@ -649,6 +652,8 @@ boolean_t zbookmark_subtree_completed(const struct dnode_phys *dnp,
     const zbookmark_phys_t *subtree_root, const zbookmark_phys_t *last_block);
 int zbookmark_compare(uint16_t dbss1, uint8_t ibs1, uint16_t dbss2,
     uint8_t ibs2, const zbookmark_phys_t *zb1, const zbookmark_phys_t *zb2);
+
+extern char * zio_flags_to_str(zio_t *zio);
 
 #ifdef	__cplusplus
 }

@@ -1635,7 +1635,7 @@ static void
 vdev_raidz_child_done(zio_t *zio)
 {
 	raidz_col_t *rc = zio->io_private;
-
+	zfs_dbgmsg("%s: %p setting rc_error to %d\n", __func__, zio, zio->io_error);
 	rc->rc_error = zio->io_error;
 	rc->rc_tried = 1;
 	rc->rc_skipped = 0;
@@ -1667,6 +1667,7 @@ vdev_raidz_io_start(zio_t *zio)
 	raidz_map_t *rm;
 	raidz_col_t *rc;
 	int c, i;
+	zio_t *newzio;
 
 	rm = vdev_raidz_map_alloc(zio, tvd->vdev_ashift, vd->vdev_children,
 	    vd->vdev_nparity);
@@ -1695,11 +1696,13 @@ vdev_raidz_io_start(zio_t *zio)
 				c = 0;
 			rc = &rm->rm_col[c];
 			cvd = vd->vdev_child[rc->rc_devidx];
-			zio_nowait(zio_vdev_child_io(zio, NULL, cvd,
+			newzio = zio_vdev_child_io(zio, NULL, cvd,
 			    rc->rc_offset + rc->rc_size, NULL,
 			    1 << tvd->vdev_ashift,
 			    zio->io_type, zio->io_priority,
-			    ZIO_FLAG_NODATA | ZIO_FLAG_OPTIONAL, NULL, NULL));
+			    ZIO_FLAG_NODATA | ZIO_FLAG_OPTIONAL, NULL, NULL);
+			rc->zio = newzio;
+			zio_nowait(newzio);
 		}
 
 		zio_execute(zio);
@@ -1736,10 +1739,12 @@ vdev_raidz_io_start(zio_t *zio)
 		}
 		if (c >= rm->rm_firstdatacol || rm->rm_missingdata > 0 ||
 		    (zio->io_flags & (ZIO_FLAG_SCRUB | ZIO_FLAG_RESILVER))) {
-			zio_nowait(zio_vdev_child_io(zio, NULL, cvd,
+			newzio = zio_vdev_child_io(zio, NULL, cvd,
 			    rc->rc_offset, rc->rc_abd, rc->rc_size,
 			    zio->io_type, zio->io_priority, 0,
-			    vdev_raidz_child_done, rc));
+			    vdev_raidz_child_done, rc);
+			rc->zio = newzio;
+			zio_nowait(newzio);
 		}
 	}
 
@@ -1755,21 +1760,17 @@ raidz_checksum_error(zio_t *zio, raidz_col_t *rc, abd_t *bad_data)
 {
 	vdev_t *vd = zio->io_vd->vdev_child[rc->rc_devidx];
 
-	if (!(zio->io_flags & ZIO_FLAG_SPECULATIVE)) {
-		zio_bad_cksum_t zbc;
-		raidz_map_t *rm = zio->io_vsd;
+	zio_bad_cksum_t zbc;
+	raidz_map_t *rm = zio->io_vsd;
 
-		mutex_enter(&vd->vdev_stat_lock);
-		vd->vdev_stat.vs_checksum_errors++;
-		mutex_exit(&vd->vdev_stat_lock);
+	zbc.zbc_has_cksum = 0;
+	zbc.zbc_injected = rm->rm_ecksuminjected;
 
-		zbc.zbc_has_cksum = 0;
-		zbc.zbc_injected = rm->rm_ecksuminjected;
+	zfs_dbgmsg("%s: %p posting\n", __func__, zio);
+	zfs_ereport_post_checksum(zio->io_spa, vd,
+	    &zio->io_bookmark, zio, rc->rc_offset, rc->rc_size,
+	    rc->rc_abd, bad_data, &zbc);
 
-		zfs_ereport_post_checksum(zio->io_spa, vd,
-		    &zio->io_bookmark, zio, rc->rc_offset, rc->rc_size,
-		    rc->rc_abd, bad_data, &zbc);
-	}
 }
 
 /*
@@ -1824,11 +1825,21 @@ raidz_parity_verify(zio_t *zio, raidz_map_t *rm)
 	vdev_raidz_generate_parity(rm);
 
 	for (c = 0; c < rm->rm_firstdatacol; c++) {
+		vdev_t *vd;
 		rc = &rm->rm_col[c];
 		if (!rc->rc_tried || rc->rc_error != 0)
 			continue;
 		if (abd_cmp(orig[c], rc->rc_abd) != 0) {
 			raidz_checksum_error(zio, rc, orig[c]);
+			zfs_dbgmsg("%s: %p setting rc_error to checksum (io_err %d)\n", __func__, zio, zio->io_error);
+
+			vd = zio->io_vd->vdev_child[rc->rc_devidx];
+			mutex_enter(&vd->vdev_stat_lock);
+			vd->vdev_stat.vs_checksum_errors++;
+			mutex_exit(&vd->vdev_stat_lock);
+
+			zfs_dbgmsg("%s: %p last incremement checksum_errors %d\n", __func__, zio, vd->vdev_stat.vs_checksum_errors);
+
 			rc->rc_error = SET_ERROR(ECKSUM);
 			ret++;
 		}
@@ -1942,17 +1953,29 @@ vdev_raidz_combrec(zio_t *zio, int total_errors, int data_errors)
 			if (raidz_checksum_verify(zio) == 0) {
 
 				for (i = 0; i < n; i++) {
+					vdev_t *vd;
+
 					c = tgts[i];
 					rc = &rm->rm_col[c];
+					vd = zio->io_vd->vdev_child[rc->rc_devidx];
+
 					ASSERT(rc->rc_error == 0);
 					if (rc->rc_tried)
 						raidz_checksum_error(zio, rc,
 						    orig[i]);
+
+					mutex_enter(&vd->vdev_stat_lock);
+					vd->vdev_stat.vs_checksum_errors++;
+					mutex_exit(&vd->vdev_stat_lock);
+
+					zfs_dbgmsg("%s: %p other incremement checksum_errors %d\n", __func__, zio, vd->vdev_stat.vs_checksum_errors);
 					rc->rc_error = SET_ERROR(ECKSUM);
 				}
 
 				ret = code;
 				goto done;
+			} else {
+				zfs_dbgmsg("%s: (%d:%d) %p wasnt verified!\n", __func__, n, c, zio);
 			}
 
 			/*
@@ -2001,6 +2024,9 @@ done:
 	for (i = 0; i < n; i++)
 		abd_free(orig[i]);
 
+
+	zfs_dbgmsg("%s: %p return %d\n", __func__, ret);
+
 	return (ret);
 }
 
@@ -2045,28 +2071,40 @@ vdev_raidz_io_done(zio_t *zio)
 
 	ASSERT(rm->rm_missingparity <= rm->rm_firstdatacol);
 	ASSERT(rm->rm_missingdata <= rm->rm_cols - rm->rm_firstdatacol);
+	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	for (c = 0; c < rm->rm_cols; c++) {
+		vdev_t *tmpvd;
 		rc = &rm->rm_col[c];
+		tmpvd = zio->io_vd->vdev_child[rc->rc_devidx];
 
 		if (rc->rc_error) {
 			ASSERT(rc->rc_error != ECKSUM);	/* child has no bp */
 
-			if (c < rm->rm_firstdatacol)
+			if (c < rm->rm_firstdatacol) {
 				parity_errors++;
-			else
-				data_errors++;
+				zfs_dbgmsg("%s: %p parity err %s %d\n", __func__, zio, tmpvd->vdev_path, parity_errors);
 
-			if (!rc->rc_skipped)
+			} else {
+				data_errors++;
+				zfs_dbgmsg("%s: %p data err %s %d\n", __func__, zio, tmpvd->vdev_path, data_errors);
+			}
+
+			if (!rc->rc_skipped) {
 				unexpected_errors++;
+				zfs_dbgmsg("%s: %p rc_skipped %s %d\n", __func__, zio, tmpvd->vdev_path, unexpected_errors);
+			}
 
 			total_errors++;
 		} else if (c < rm->rm_firstdatacol && !rc->rc_tried) {
 			parity_untried++;
+			zfs_dbgmsg("%s: %p parity_untried  %s %d\n", __func__, zio, tmpvd->vdev_path, parity_untried);
 		}
 	}
 
 	if (zio->io_type == ZIO_TYPE_WRITE) {
+//		zfs_dbgmsg("%s: %p write, err=%d, total_errs=%d, data %d, parity %d\n", __func__, zio, zio->io_error, total_errors, data_errors, parity_errors);
+
 		/*
 		 * XXX -- for now, treat partial writes as a success.
 		 * (If we couldn't write enough columns to reconstruct
@@ -2078,8 +2116,31 @@ vdev_raidz_io_done(zio_t *zio)
 		 * if we intend to reallocate.
 		 */
 		/* XXPOLICY */
-		if (total_errors > rm->rm_firstdatacol)
+		if (total_errors > rm->rm_firstdatacol) {
 			zio->io_error = vdev_raidz_worst_error(rm);
+		} else {
+			/*
+			 * We have at least one good copy.  Update the
+			 * stats for the child writes that were
+			 * (non-fatally) bad.
+			 */
+
+			for (c = 0; c < rm->rm_cols; c++) {
+				rc = &rm->rm_col[c];
+				vdev_stat_ex_t *vsx;
+				vdev_t *cvd = zio->io_vd->vdev_child[rc->rc_devidx];
+
+				if (rc->rc_error == EIO) {
+					vsx = &cvd->vdev_stat_ex;
+					mutex_enter(&cvd->vdev_stat_lock);
+					vsx->vsx_heal_write_errors++;
+//					zfs_dbgmsg("%s: parent %p, healed %llu\n", __func__, zio, vsx->vsx_heal_write_errors);
+					mutex_exit(&cvd->vdev_stat_lock);
+				} else {
+//					zfs_dbgmsg("%s: parent %p, other %d\n", __func__, zio, rc->rc_error);
+				}
+			}
+		}
 
 		return;
 	}
@@ -2103,6 +2164,8 @@ vdev_raidz_io_done(zio_t *zio)
 	 * any errors.
 	 */
 	if (total_errors <= rm->rm_firstdatacol - parity_untried) {
+		zfs_dbgmsg("%s: %p some kind of other error, data= %d\n", __func__, zio, parity_untried);
+
 		if (data_errors == 0) {
 			if (raidz_checksum_verify(zio) == 0) {
 				/*
@@ -2175,6 +2238,8 @@ vdev_raidz_io_done(zio_t *zio)
 				goto done;
 			}
 		}
+		zfs_dbgmsg("%s: %p some kind of other error 2\n", __func__, zio);
+
 	}
 
 	/*
@@ -2189,6 +2254,8 @@ vdev_raidz_io_done(zio_t *zio)
 	rm->rm_missingparity = 0;
 
 	for (c = 0; c < rm->rm_cols; c++) {
+//		zio_t *newzio;
+		zfs_dbgmsg("%s: %p [%d] non-typical\n", __func__, zio);
 		if (rm->rm_col[c].rc_tried)
 			continue;
 
@@ -2219,16 +2286,20 @@ vdev_raidz_io_done(zio_t *zio)
 	 */
 	if (total_errors > rm->rm_firstdatacol) {
 		zio->io_error = vdev_raidz_worst_error(rm);
+		zfs_dbgmsg("%s: parent %p give up\n", __func__, zio);
 
 	} else if (total_errors < rm->rm_firstdatacol &&
 	    (code = vdev_raidz_combrec(zio, total_errors, data_errors)) != 0) {
+		int ret;
 		/*
 		 * If we didn't use all the available parity for the
 		 * combinatorial reconstruction, verify that the remaining
 		 * parity is correct.
 		 */
-		if (code != (1 << rm->rm_firstdatacol) - 1)
-			(void) raidz_parity_verify(zio, rm);
+		if (code != (1 << rm->rm_firstdatacol) - 1) {
+			ret = raidz_parity_verify(zio, rm);
+			zfs_dbgmsg("%s: parent %p got parity errors %d\n", __func__, zio, ret);
+		}
 	} else {
 		/*
 		 * We're here because either:
@@ -2244,21 +2315,31 @@ vdev_raidz_io_done(zio_t *zio)
 		 */
 		zio->io_error = SET_ERROR(ECKSUM);
 
-		if (!(zio->io_flags & ZIO_FLAG_SPECULATIVE)) {
-			for (c = 0; c < rm->rm_cols; c++) {
-				rc = &rm->rm_col[c];
-				if (rc->rc_error == 0) {
-					zio_bad_cksum_t zbc;
-					zbc.zbc_has_cksum = 0;
-					zbc.zbc_injected =
-					    rm->rm_ecksuminjected;
+		for (c = 0; c < rm->rm_cols; c++) {
+			vdev_t *tmpvd;
+			rc = &rm->rm_col[c];
+			tmpvd = vd->vdev_child[rc->rc_devidx];
+			zfs_dbgmsg("%s: [%d] %p %s io_error is %d\n", __func__, c, zio, tmpvd->vdev_path, rc->rc_error);
+
+			if (rc->rc_error == 0) {
+				zio_bad_cksum_t zbc;
+				zbc.zbc_has_cksum = 0;
+				zbc.zbc_injected =
+				    rm->rm_ecksuminjected;
+				zfs_dbgmsg("%s: %p starting possibly fake checksum event, io_error %d\n", __func__, zio, zio->io_error);
+				if (zio_is_countable_checksum_error(zio)) {
+					mutex_enter(&tmpvd->vdev_stat_lock);
+					tmpvd->vdev_stat.vs_checksum_errors++;
+					mutex_exit(&tmpvd->vdev_stat_lock);
+					zfs_dbgmsg("%s: %p incremement checksum_errors %d\n", __func__, zio, tmpvd->vdev_stat.vs_checksum_errors);
 
 					zfs_ereport_start_checksum(
-					    zio->io_spa,
-					    vd->vdev_child[rc->rc_devidx],
+					    zio->io_spa, tmpvd,
 					    &zio->io_bookmark, zio,
 					    rc->rc_offset, rc->rc_size,
 					    (void *)(uintptr_t)c, &zbc);
+				} else {
+					zfs_dbgmsg("%s: %p wasnt countable\n", __func__, zio);
 				}
 			}
 		}
@@ -2273,17 +2354,30 @@ done:
 		 * Use the good data we have in hand to repair damaged children.
 		 */
 		for (c = 0; c < rm->rm_cols; c++) {
+			zio_t *newzio;
+			vdev_t *newvd;
 			rc = &rm->rm_col[c];
 			cvd = vd->vdev_child[rc->rc_devidx];
 
 			if (rc->rc_error == 0)
 				continue;
 
-			zio_nowait(zio_vdev_child_io(zio, NULL, cvd,
+			newzio = zio_vdev_child_io(zio, NULL, cvd,
 			    rc->rc_offset, rc->rc_abd, rc->rc_size,
 			    ZIO_TYPE_WRITE, ZIO_PRIORITY_ASYNC_WRITE,
 			    ZIO_FLAG_IO_REPAIR | (unexpected_errors ?
-			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL));
+			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL);
+
+			newvd = newzio->io_vd;
+			mutex_enter(&newvd->vdev_stat_lock);
+			if (rc->rc_error == ECKSUM) {
+				newvd->vdev_stat_ex.vsx_heal_checksum_errors++;
+				zfs_dbgmsg("%s: %p healed checksum %d (io_err %d)\n", __func__, rc->zio, newvd->vdev_stat_ex.vsx_heal_checksum_errors, rc->zio->io_error);
+			} else if (rc->rc_error == EIO)
+				newvd->vdev_stat_ex.vsx_heal_read_errors++;
+			mutex_exit(&newvd->vdev_stat_lock);
+
+			zio_nowait(newzio);
 		}
 	}
 }

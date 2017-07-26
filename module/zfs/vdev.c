@@ -49,6 +49,7 @@
 #include <sys/abd.h>
 #include <sys/zvol.h>
 #include <sys/zfs_ratelimit.h>
+#include <sys/zio_checksum.h>
 
 /*
  * When a vdev is added, it will be divided into approximately (but no
@@ -2788,6 +2789,9 @@ vdev_clear(spa_t *spa, vdev_t *vd)
 	vd->vdev_stat.vs_read_errors = 0;
 	vd->vdev_stat.vs_write_errors = 0;
 	vd->vdev_stat.vs_checksum_errors = 0;
+	vd->vdev_stat_ex.vsx_heal_read_errors = 0;
+	vd->vdev_stat_ex.vsx_heal_write_errors = 0;
+	vd->vdev_stat_ex.vsx_heal_checksum_errors = 0;
 
 	for (c = 0; c < vd->vdev_children; c++)
 		vdev_clear(spa, vd->vdev_child[c]);
@@ -2906,6 +2910,10 @@ vdev_get_child_stat(vdev_t *cvd, vdev_stat_t *vs, vdev_stat_t *cvs)
 		vs->vs_bytes[t] += cvs->vs_bytes[t];
 	}
 
+	vs->vs_read_errors += cvs->vs_read_errors;
+	vs->vs_write_errors += cvs->vs_write_errors;
+	vs->vs_checksum_errors += cvs->vs_checksum_errors;
+
 	cvs->vs_scan_removing = cvd->vdev_removing;
 }
 
@@ -2941,6 +2949,10 @@ vdev_get_child_stat_ex(vdev_t *cvd, vdev_stat_ex_t *vsx, vdev_stat_ex_t *cvsx)
 			vsx->vsx_agg_histo[t][b] += cvsx->vsx_agg_histo[t][b];
 	}
 
+	vsx->vsx_heal_checksum_errors += cvsx->vsx_heal_checksum_errors;
+	vsx->vsx_heal_read_errors += cvsx->vsx_heal_read_errors;
+	vsx->vsx_heal_write_errors += cvsx->vsx_heal_write_errors;
+	vsx->vsx_heal_delays += cvsx->vsx_heal_delays;
 }
 
 /*
@@ -2958,6 +2970,9 @@ vdev_get_stats_ex_impl(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 		if (vs) {
 			memset(vs->vs_ops, 0, sizeof (vs->vs_ops));
 			memset(vs->vs_bytes, 0, sizeof (vs->vs_bytes));
+			vs->vs_read_errors = 0;
+			vs->vs_write_errors = 0;
+			vs->vs_checksum_errors = 0;
 		}
 		if (vsx)
 			memset(vsx, 0, sizeof (*vsx));
@@ -3072,6 +3087,9 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 	zio_type_t type = zio->io_type;
 	int flags = zio->io_flags;
 
+	if (vd->vdev_ops->vdev_op_leaf)
+		zfs_dbgmsg("%s: %p begin leaf\n", __func__, zio);
+
 	/*
 	 * If this i/o is a gang leader, it didn't do any actual work.
 	 */
@@ -3079,6 +3097,10 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		return;
 
 	if (zio->io_error == 0) {
+		if (vd->vdev_ops->vdev_op_leaf)
+			zfs_dbgmsg("%s: %p no io err\n", __func__, zio);
+
+
 		/*
 		 * If this is a root i/o, don't count it -- we've already
 		 * counted the top-level vdevs, and vdev_get_stats() will
@@ -3104,6 +3126,7 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		mutex_enter(&vd->vdev_stat_lock);
 
 		if (flags & ZIO_FLAG_IO_REPAIR) {
+
 			if (flags & ZIO_FLAG_SCAN_THREAD) {
 				dsl_scan_phys_t *scn_phys =
 				    &spa->spa_dsl_pool->dp_scan->scn_phys;
@@ -3151,37 +3174,43 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		return;
 	}
 
-	if (flags & ZIO_FLAG_SPECULATIVE)
-		return;
-
-	/*
-	 * If this is an I/O error that is going to be retried, then ignore the
-	 * error.  Otherwise, the user may interpret B_FAILFAST I/O errors as
-	 * hard errors, when in reality they can happen for any number of
-	 * innocuous reasons (bus resets, MPxIO link failure, etc).
-	 */
-	if (zio->io_error == EIO &&
-	    !(zio->io_flags & ZIO_FLAG_IO_RETRY))
-		return;
-
 	/*
 	 * Intent logs writes won't propagate their error to the root
 	 * I/O so don't mark these types of failures as pool-level
 	 * errors.
 	 */
-	if (zio->io_vd == NULL && (zio->io_flags & ZIO_FLAG_DONT_PROPAGATE))
+	if (zio->io_vd == NULL && (zio->io_flags & ZIO_FLAG_DONT_PROPAGATE)) {
+		if (vd->vdev_ops->vdev_op_leaf)
+			zfs_dbgmsg("%s: %p dont propogate\n", __func__, zio);
 		return;
-
-	mutex_enter(&vd->vdev_stat_lock);
-	if (type == ZIO_TYPE_READ && !vdev_is_dead(vd)) {
-		if (zio->io_error == ECKSUM)
-			vs->vs_checksum_errors++;
-		else
-			vs->vs_read_errors++;
 	}
-	if (type == ZIO_TYPE_WRITE && !vdev_is_dead(vd))
-		vs->vs_write_errors++;
-	mutex_exit(&vd->vdev_stat_lock);
+
+	/*
+	 * Update the stats for leaf vdevs.  We'll aggregate them up
+	 * to the top level vdevs and pool stats in vdev_stats_update
+	 */
+	if (vd->vdev_ops->vdev_op_leaf && !vdev_is_dead(vd)) {
+		mutex_enter(&vd->vdev_stat_lock);
+		if (type == ZIO_TYPE_READ) {
+			if (zio->io_error == ECKSUM)  {
+				if (zio_is_countable_checksum_error_leaf(zio)) {
+					zfs_dbgmsg("%s: %p incrementing in vdev_stats\n", __func__, zio);
+					vs->vs_checksum_errors++;
+				} else
+					zfs_dbgmsg("%s: %p not a real checksum\n", __func__, zio);
+			} else
+				vs->vs_read_errors++;
+		}
+		if (type == ZIO_TYPE_WRITE) {
+			char *tmp;
+			vs->vs_write_errors++;
+			tmp = zio_flags_to_str(zio); //vdev
+			zfs_dbgmsg("%s: %p %s realerror write %llu, %d, guid %llu (child %d) %s\n", __func__, zio, vd->vdev_path, vs->vs_write_errors, zio->io_error, vd->vdev_guid, vd->vdev_children, tmp);
+			kmem_free(tmp,0);
+		}
+
+		mutex_exit(&vd->vdev_stat_lock);
+	}
 
 	if (type == ZIO_TYPE_WRITE && txg != 0 &&
 	    (!(flags & ZIO_FLAG_IO_REPAIR) ||
@@ -3764,6 +3793,51 @@ vdev_deadman(vdev_t *vd)
 		}
 		mutex_exit(&vq->vq_lock);
 	}
+}
+
+/*
+ * Utility function to return the next vdev leaf.  Useful for iterating over
+ * all leaf vdevs under a root vdev:
+ *
+ *	 vdev_t leaf_vd = NULL;
+ *	 while ((leaf_vd = vdev_get_next_leaf(root_vd, leaf_vd)))
+ * 		zfs_dbgmsg("Leaf is %s\n", leaf_vd->vdev_path);
+ *
+ * Returns next leaf vdev found, or NULL if there are no more leaf vdevs.
+ */
+vdev_t *
+vdev_get_next_leaf(vdev_t *rvd, vdev_t *prev_vd)
+{
+	boolean_t seen_prev = B_FALSE;
+
+	/* This is our first run though, return the first leaf we find */
+	if (prev_vd == NULL)
+		seen_prev = B_TRUE;
+
+	/* Iterate though our root vdev's children */
+	for (int i = 0; i < rvd->vdev_children; i++) {
+		vdev_t *tmpvd = rvd->vdev_child[i];
+
+		/* Are we a leaf? */
+		if (tmpvd->vdev_ops->vdev_op_leaf) {
+			if (seen_prev) {
+				/* Found it, we're done */
+				return (tmpvd);
+			}
+		} else {
+			/*
+			 * We're a top level vdev, look though all our children
+			 * for a leaf.
+			 */
+			tmpvd = vdev_get_next_leaf(tmpvd, prev_vd);
+			if (tmpvd != NULL)
+				return (tmpvd);
+		}
+
+		if (prev_vd == tmpvd)
+			seen_prev = B_TRUE;
+	}
+	return (NULL);
 }
 
 #if defined(_KERNEL) && defined(HAVE_SPL)

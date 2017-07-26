@@ -255,15 +255,16 @@ typedef struct spa_txg_history {
 	uint64_t	ndirty;		/* number of dirty bytes */
 	hrtime_t	times[TXG_STATE_COMMITTED]; /* completion times */
 	list_node_t	sth_link;
+	uint64_t	forced_spec;	/* speculative IOs forced to complete */
 } spa_txg_history_t;
 
 static int
 spa_txg_history_headers(char *buf, size_t size)
 {
 	(void) snprintf(buf, size, "%-8s %-16s %-5s %-12s %-12s %-12s "
-	    "%-8s %-8s %-12s %-12s %-12s %-12s\n", "txg", "birth", "state",
-	    "ndirty", "nread", "nwritten", "reads", "writes",
-	    "otime", "qtime", "wtime", "stime");
+	    "%-8s %-8s %-12s %-12s %-12s %-12s %-12s\n", "txg", "birth",
+	    "state", "ndirty", "nread", "nwritten", "reads", "writes",
+	    "otime", "qtime", "wtime", "stime", "forced_spec");
 
 	return (0);
 }
@@ -302,13 +303,14 @@ spa_txg_history_data(char *buf, size_t size, void *data)
 		    sth->times[TXG_STATE_WAIT_FOR_SYNC];
 
 	(void) snprintf(buf, size, "%-8llu %-16llu %-5c %-12llu "
-	    "%-12llu %-12llu %-8llu %-8llu %-12llu %-12llu %-12llu %-12llu\n",
+	    "%-12llu %-12llu %-8llu %-8llu %-12llu %-12llu %-12llu %-12llu "
+	    "%-12llu\n",
 	    (longlong_t)sth->txg, sth->times[TXG_STATE_BIRTH], state,
 	    (u_longlong_t)sth->ndirty,
 	    (u_longlong_t)sth->nread, (u_longlong_t)sth->nwritten,
 	    (u_longlong_t)sth->reads, (u_longlong_t)sth->writes,
 	    (u_longlong_t)open, (u_longlong_t)quiesce, (u_longlong_t)wait,
-	    (u_longlong_t)sync);
+	    (u_longlong_t)sync, (u_longlong_t)sth->forced_spec);
 
 	return (0);
 }
@@ -502,6 +504,7 @@ spa_txg_history_set_io(spa_t *spa, uint64_t txg, uint64_t nread,
 			sth->reads = reads;
 			sth->writes = writes;
 			sth->ndirty = ndirty;
+			sth->forced_spec = spa->spa_forced_spec;
 			error = 0;
 			break;
 		}
