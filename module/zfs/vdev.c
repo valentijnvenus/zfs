@@ -3072,13 +3072,19 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 	zio_type_t type = zio->io_type;
 	int flags = zio->io_flags;
 
+        zfs_dbgmsg("%s: %p begin, zio_err %d, 0x%x\n", __func__,  zio, zio->io_error, zio->io_flags);
+
 	/*
 	 * If this i/o is a gang leader, it didn't do any actual work.
 	 */
-	if (zio->io_gang_tree)
+	if (zio->io_gang_tree) {
+		zfs_dbgmsg("%s: %p gang tree, return\n", __func__, zio);
 		return;
+	}
 
 	if (zio->io_error == 0) {
+
+		zfs_dbgmsg("%s: %p io_err=0\n", __func__, zio);
 		/*
 		 * If this is a root i/o, don't count it -- we've already
 		 * counted the top-level vdevs, and vdev_get_stats() will
@@ -3093,15 +3099,26 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		 * When reading a ditto block, for example, failure of
 		 * one top-level vdev does not imply a root-level error.
 		 */
-		if (vd == rvd)
+		if (vd == rvd) {
+			zfs_dbgmsg("%s: %p root IO, returning\n", __func__, zio);
+
 			return;
+		}
 
 		ASSERT(vd == zio->io_vd);
 
-		if (flags & ZIO_FLAG_IO_BYPASS)
+		if (flags & ZIO_FLAG_IO_BYPASS) {
+			zfs_dbgmsg("%s: %p bypass, returning\n", __func__, zio);
+
 			return;
+		}
 
 		mutex_enter(&vd->vdev_stat_lock);
+
+		if (zio->io_flags & (ZIO_FLAG_IO_REPAIR | ZIO_FLAG_SELF_HEAL)) {
+			zfs_dbgmsg("%s: %p this is a repair or self heal IO\n", __func__,  zio);
+		}
+
 
 		if (flags & ZIO_FLAG_IO_REPAIR) {
 			if (flags & ZIO_FLAG_SCAN_THREAD) {
@@ -3151,8 +3168,10 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		return;
 	}
 
-	if (flags & ZIO_FLAG_SPECULATIVE)
+	if (flags & ZIO_FLAG_SPECULATIVE) {
+		zfs_dbgmsg("%s: %p speculative IO, return\n", __func__, zio);
 		return;
+	}
 
 	/*
 	 * If this is an I/O error that is going to be retried, then ignore the
@@ -3161,23 +3180,34 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 	 * innocuous reasons (bus resets, MPxIO link failure, etc).
 	 */
 	if (zio->io_error == EIO &&
-	    !(zio->io_flags & ZIO_FLAG_IO_RETRY))
+	    !(zio->io_flags & ZIO_FLAG_IO_RETRY)) {
+		zfs_dbgmsg("%s: %p EIO + no retry, returning\n", __func__,  zio);
 		return;
+	} 
+	
+	if (zio->io_error == EIO && zio->io_flags & ZIO_FLAG_IO_RETRY)
+		zfs_dbgmsg("%s: %p is a retried IO that failed with EIO\n", __func__,  zio);
 
 	/*
 	 * Intent logs writes won't propagate their error to the root
 	 * I/O so don't mark these types of failures as pool-level
 	 * errors.
 	 */
-	if (zio->io_vd == NULL && (zio->io_flags & ZIO_FLAG_DONT_PROPAGATE))
+	if (zio->io_vd == NULL && (zio->io_flags & ZIO_FLAG_DONT_PROPAGATE)) {
+		zfs_dbgmsg("%s: %p don't propogate, returning\n", __func__,  zio);
 		return;
+	}
+
+	zfs_dbgmsg("%s: %p increment error stats\n", __func__,  zio);
 
 	mutex_enter(&vd->vdev_stat_lock);
 	if (type == ZIO_TYPE_READ && !vdev_is_dead(vd)) {
-		if (zio->io_error == ECKSUM)
+		if (zio->io_error == ECKSUM) {
+			zfs_dbgmsg("%s: %p checksum++\n", __func__, zio);
 			vs->vs_checksum_errors++;
-		else
+		} else {
 			vs->vs_read_errors++;
+		}
 	}
 	if (type == ZIO_TYPE_WRITE && !vdev_is_dead(vd))
 		vs->vs_write_errors++;

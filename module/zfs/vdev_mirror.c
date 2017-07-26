@@ -254,6 +254,7 @@ static void
 vdev_mirror_child_done(zio_t *zio)
 {
 	mirror_child_t *mc = zio->io_private;
+	zfs_dbgmsg("%s: %p begin, err %d\n", __func__, zio, zio->io_error);
 
 	mc->mc_error = zio->io_error;
 	mc->mc_tried = 1;
@@ -419,6 +420,7 @@ vdev_mirror_io_start(zio_t *zio)
 	mirror_map_t *mm;
 	mirror_child_t *mc;
 	int c, children;
+	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	mm = vdev_mirror_map_init(zio);
 
@@ -431,13 +433,18 @@ vdev_mirror_io_start(zio_t *zio)
 			 * data into zio->io_data in vdev_mirror_scrub_done.
 			 */
 			for (c = 0; c < mm->mm_children; c++) {
+				zio_t *tmpzio;
 				mc = &mm->mm_child[c];
-				zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
+
+
+				tmpzio = zio_vdev_child_io(zio, zio->io_bp,
 				    mc->mc_vd, mc->mc_offset,
 				    abd_alloc_sametype(zio->io_abd,
 				    zio->io_size), zio->io_size,
 				    zio->io_type, zio->io_priority, 0,
-				    vdev_mirror_scrub_done, mc));
+					vdev_mirror_scrub_done, mc);
+				zfs_dbgmsg("%s: %p scrub child %d, %p begin\n", __func__, zio, c, tmpzio);
+				zio_nowait(tmpzio);
 			}
 			zio_execute(zio);
 			return;
@@ -446,6 +453,8 @@ vdev_mirror_io_start(zio_t *zio)
 		 * For normal reads just pick one child.
 		 */
 		c = vdev_mirror_child_select(zio);
+		zfs_dbgmsg("%s: %p regular read, picked child %d\n", __func__, zio, c);
+
 		children = (c >= 0);
 	} else {
 		ASSERT(zio->io_type == ZIO_TYPE_WRITE);
@@ -458,11 +467,15 @@ vdev_mirror_io_start(zio_t *zio)
 	}
 
 	while (children--) {
+		zio_t *tmpzio;
 		mc = &mm->mm_child[c];
-		zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
+
+		tmpzio = zio_vdev_child_io(zio, zio->io_bp,
 		    mc->mc_vd, mc->mc_offset, zio->io_abd, zio->io_size,
 		    zio->io_type, zio->io_priority, 0,
-		    vdev_mirror_child_done, mc));
+		    vdev_mirror_child_done, mc);
+		zfs_dbgmsg("%s: %p mirror child %d, %p begin\n", __func__, zio, c, tmpzio);
+		zio_nowait(tmpzio);
 		c++;
 	}
 
@@ -496,6 +509,7 @@ vdev_mirror_io_done(zio_t *zio)
 		mc = &mm->mm_child[c];
 
 		if (mc->mc_error) {
+			zfs_dbgmsg("%s: %p child %d/%d had error %d\n", __func__, zio, c,  mm->mm_children, mc->mc_error);
 			if (!mc->mc_skipped)
 				unexpected_errors++;
 		} else if (mc->mc_tried) {
@@ -556,7 +570,7 @@ vdev_mirror_io_done(zio_t *zio)
 		zio->io_error = vdev_mirror_worst_error(mm);
 		ASSERT(zio->io_error != 0);
 	}
-
+	
 	if (good_copies && spa_writeable(zio->io_spa) &&
 	    (unexpected_errors ||
 	    (zio->io_flags & ZIO_FLAG_RESILVER) ||
@@ -565,6 +579,7 @@ vdev_mirror_io_done(zio_t *zio)
 		 * Use the good data we have in hand to repair damaged children.
 		 */
 		for (c = 0; c < mm->mm_children; c++) {
+			zio_t *newzio;
 			/*
 			 * Don't rewrite known good children.
 			 * Not only is it unnecessary, it could
@@ -584,12 +599,17 @@ vdev_mirror_io_done(zio_t *zio)
 				mc->mc_error = SET_ERROR(ESTALE);
 			}
 
-			zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
-			    mc->mc_vd, mc->mc_offset,
-			    zio->io_abd, zio->io_size,
-			    ZIO_TYPE_WRITE, ZIO_PRIORITY_ASYNC_WRITE,
-			    ZIO_FLAG_IO_REPAIR | (unexpected_errors ?
-			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL));
+			newzio = zio_vdev_child_io(zio, zio->io_bp,
+                            mc->mc_vd, mc->mc_offset,
+                            zio->io_abd, zio->io_size,
+                            ZIO_TYPE_WRITE, ZIO_PRIORITY_ASYNC_WRITE,
+                            ZIO_FLAG_IO_REPAIR | (unexpected_errors ?
+                            ZIO_FLAG_SELF_HEAL : 0), NULL, NULL);
+
+			zfs_dbgmsg("%s: %p failed with err %d, sending out %p repair IO (unexpected_errors %d, good_copies %d, scrub? %d)\n",
+				__func__, zio, zio->io_error, newzio, unexpected_errors, good_copies, zio->io_flags & ZIO_FLAG_SCRUB ? 1 : 0);
+
+			zio_nowait(newzio);
 		}
 	}
 }

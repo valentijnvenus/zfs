@@ -610,6 +610,7 @@ zio_create(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 
 	zio = kmem_cache_alloc(zio_cache, KM_SLEEP);
 	bzero(zio, sizeof (zio_t));
+	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	mutex_init(&zio->io_lock, NULL, MUTEX_NOLOCKDEP, NULL);
 	cv_init(&zio->io_cv, NULL, CV_DEFAULT, NULL);
@@ -1682,6 +1683,7 @@ static inline void
 __zio_execute(zio_t *zio)
 {
 	zio->io_executor = curthread;
+	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	ASSERT3U(zio->io_queued_timestamp, >, 0);
 
@@ -1749,6 +1751,7 @@ int
 zio_wait(zio_t *zio)
 {
 	int error;
+	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	ASSERT(zio->io_stage == ZIO_STAGE_OPEN);
 	ASSERT(zio->io_executor == NULL);
@@ -1774,6 +1777,7 @@ void
 zio_nowait(zio_t *zio)
 {
 	ASSERT(zio->io_executor == NULL);
+	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	if (zio->io_child_type == ZIO_CHILD_LOGICAL &&
 	    zio_unique_parent(zio) == NULL) {
@@ -3715,6 +3719,8 @@ zio_done(zio_t *zio)
 	zio_t *pio, *pio_next;
 	int c, w;
 	zio_link_t *zl = NULL;
+	zfs_dbgmsg("%s: %p begin\n", __func__,  zio);
+
 
 	/*
 	 * If our children haven't all completed,
