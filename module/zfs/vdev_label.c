@@ -344,6 +344,19 @@ vdev_config_generate_stats(vdev_t *vd, nvlist_t *nv)
 	    vsx->vsx_agg_histo[ZIO_PRIORITY_SCRUB],
 	    ARRAY_SIZE(vsx->vsx_agg_histo[ZIO_PRIORITY_SCRUB]));
 
+	/* self-healed IO stats */
+	fnvlist_add_uint64(nvx, ZPOOL_CONFIG_VDEV_HEAL_CHECKSUM_ERRORS,
+	    vsx->vsx_heal_checksum_errors);
+
+	fnvlist_add_uint64(nvx, ZPOOL_CONFIG_VDEV_HEAL_READ_ERRORS,
+	    vsx->vsx_heal_read_errors);
+
+	fnvlist_add_uint64(nvx, ZPOOL_CONFIG_VDEV_HEAL_WRITE_ERRORS,
+	    vsx->vsx_heal_write_errors);
+
+	fnvlist_add_uint64(nvx, ZPOOL_CONFIG_VDEV_DELAY_ERRORS,
+	    vsx->vsx_delay_errors);
+
 	/* Add extended stats nvlist to main nvlist */
 	fnvlist_add_nvlist(nv, ZPOOL_CONFIG_VDEV_STATS_EX, nvx);
 

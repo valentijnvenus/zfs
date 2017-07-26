@@ -765,6 +765,14 @@ zio_create(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 
 	zio->io_spa = spa;
 	zio->io_txg = txg;
+
+	if (spa->spa_dsl_pool != NULL) {
+		/* Record open TXG at time of zio creation */
+		zio->io_creation_txg = spa->spa_dsl_pool->dp_tx.tx_open_txg;
+	} else {
+		zio->io_creation_txg = 0;
+	}
+
 	zio->io_done = done;
 	zio->io_private = private;
 	zio->io_type = type;
@@ -3487,6 +3495,10 @@ zio_vdev_io_done(zio_t *zio)
 		}
 	}
 
+//	if (zio->io_error == EIO) {
+//		zfs_dbgmsg("%s: %p %s had an IO error\n", __func__, vd->vdev_path);
+//	}
+
 	ops->vdev_op_io_done(zio);
 
 	if (unexpected_error)
@@ -3802,6 +3814,48 @@ zio_checksum_generate(zio_t *zio)
 	return (ZIO_PIPELINE_CONTINUE);
 }
 
+/*
+ * Returns true if the zio should be counted in the checksum error stats.
+ *
+ * This includes all checksum-errored zios from:
+ *
+ * 1. leaf vdevs that are present
+ * 2. ...and not probing the label (which may not exist)
+ * 3. ...and are physical IOs.
+ */
+boolean_t
+zio_is_countable_checksum_error(zio_t *zio)
+{
+	vdev_t *vd = zio->io_vd;
+	char *flags;
+
+	flags = zio_flags_to_str(zio); //zio
+	if (zio->io_error == ECKSUM && !vdev_is_dead(vd) &&
+	    zio->io_prop.zp_checksum != ZIO_CHECKSUM_LABEL &&
+//	    zio->io_bookmark.zb_object != ZB_ZIL_OBJECT &&
+	    zio->io_bookmark.zb_level != ZB_ZIL_LEVEL) {
+		zfs_dbgmsg("%s: %p %s real checksum , leaf %p, zp_checksum %d, offset=%llu, chksum_report %p, (obset %llu, obj %llu, level %lld, blkid %llu)  io_flags %s\n",
+		__func__, zio, zio->io_vd->vdev_path, vd->vdev_ops->vdev_op_leaf, zio->io_prop.zp_checksum, zio->io_offset, zio->io_cksum_report,
+		zio->io_bookmark.zb_objset, zio->io_bookmark.zb_object, zio->io_bookmark.zb_level, zio->io_bookmark.zb_blkid, flags);
+		kmem_free(flags, strlen(flags) + 1);
+		return (B_TRUE);
+	}
+	zfs_dbgmsg("%s: %p %s fake checksum, leaf %p, zp_checksum %d, offset=%llu, chksum_report %p, (obset %llu, obj %llu, level %lld, blkid %llu)  io_flags %s\n",
+		__func__, zio, zio->io_vd->vdev_path, vd->vdev_ops->vdev_op_leaf, zio->io_prop.zp_checksum, zio->io_offset, zio->io_cksum_report,
+		zio->io_bookmark.zb_objset, zio->io_bookmark.zb_object, zio->io_bookmark.zb_level, zio->io_bookmark.zb_blkid, flags);
+
+	kmem_free(flags, strlen(flags) + 1);
+
+	return (B_FALSE);
+}
+
+boolean_t
+zio_is_countable_checksum_error_leaf(zio_t *zio)
+{
+	return (zio->io_vd->vdev_ops->vdev_op_leaf &&
+	    zio_is_countable_checksum_error(zio));
+}
+
 static int
 zio_checksum_verify(zio_t *zio)
 {
@@ -3824,8 +3878,8 @@ zio_checksum_verify(zio_t *zio)
 
 	if ((error = zio_checksum_error(zio, &info)) != 0) {
 		zio->io_error = error;
-		if (error == ECKSUM &&
-		    !(zio->io_flags & ZIO_FLAG_SPECULATIVE)) {
+		if (error == ECKSUM && zio_is_countable_checksum_error_leaf(zio)) {
+			zfs_dbgmsg("%s: %p is countable for real\n", __func__, zio);
 			zfs_ereport_start_checksum(zio->io_spa,
 			    zio->io_vd, &zio->io_bookmark, zio,
 			    zio->io_offset, zio->io_size, NULL, &info);
@@ -4020,6 +4074,7 @@ zio_done(zio_t *zio)
 	zio_t *pio, *pio_next;
 	int c, w;
 	zio_link_t *zl = NULL;
+//	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	/*
 	 * If our children haven't all completed,
@@ -4118,7 +4173,14 @@ zio_done(zio_t *zio)
 
 	zio_pop_transforms(zio);	/* note: may set zio->io_error */
 
-	vdev_stat_update(zio, psize);
+//	zfs_dbgmsg("%s: %p stat update begin\n", __func__, zio);
+
+	/* 
+	 * Don't update stats for delegated IOs - their individual child IOs
+	 * should be the ones updating stats.
+	 */
+	if (!(zio->io_flags & ZIO_FLAG_DELEGATED))
+		vdev_stat_update(zio, psize);
 
 	/*
 	 * If this I/O is attached to a particular vdev is slow, exceeding
@@ -4126,9 +4188,37 @@ zio_done(zio_t *zio)
 	 * We ignore these errors if the device is currently unavailable.
 	 */
 	if (zio->io_delay >= MSEC2NSEC(zio_delay_max)) {
-		if (zio->io_vd != NULL && !vdev_is_dead(zio->io_vd))
-			zfs_ereport_post(FM_EREPORT_ZFS_DELAY, zio->io_spa,
-			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
+		if (zio->io_vd != NULL && !vdev_is_dead(zio->io_vd)) {
+
+#if 0
+			spa_t *spa = zio->io_vd->vdev_spa;
+
+			/*
+			 * Skip recording any delays during states where
+			 * delays are normal.  These were taken from
+			 * zfs_ereport_start().
+			 */
+			if (spa_load_state(spa) == SPA_LOAD_TRYIMPORT ||
+			    (spa_load_state(spa) == SPA_LOAD_RECOVER) ||
+			    (spa_load_state(spa) != SPA_LOAD_NONE &&
+			    spa->spa_last_open_failed)) {
+				mutex_enter(&zio->io_vd->vdev_stat_lock);
+				zio->io_vd->vdev_stat_ex.vsx_heal_delays++;
+				mutex_exit(&zio->io_vd->vdev_stat_lock);
+			}
+#endif
+			/*
+			 * zfs_ereport_post() has smarts built into it to
+			 * prevent it from reporting events for bogus cases
+			 * (like delays on removed drives).
+			 */
+			if (zfs_ereport_post(FM_EREPORT_ZFS_DELAY, zio->io_spa,
+			    zio->io_vd, &zio->io_bookmark, zio, 0, 0) == 0) {
+				mutex_enter(&zio->io_vd->vdev_stat_lock);
+				zio->io_vd->vdev_stat_ex.vsx_delay_errors++;
+				mutex_exit(&zio->io_vd->vdev_stat_lock);
+			}
+		}
 	}
 
 	if (zio->io_error) {
@@ -4144,8 +4234,7 @@ zio_done(zio_t *zio)
 			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
 
 		if ((zio->io_error == EIO || !(zio->io_flags &
-		    (ZIO_FLAG_SPECULATIVE | ZIO_FLAG_DONT_PROPAGATE))) &&
-		    zio == zio->io_logical) {
+		    ZIO_FLAG_DONT_PROPAGATE)) && zio == zio->io_logical) {
 			/*
 			 * For logical I/O requests, tell the SPA to log the
 			 * error and generate a logical data ereport.
@@ -4214,7 +4303,11 @@ zio_done(zio_t *zio)
 	    (zio->io_reexecute & ZIO_REEXECUTE_SUSPEND))
 		zio->io_reexecute &= ~ZIO_REEXECUTE_SUSPEND;
 
+//	zfs_dbgmsg("%s: %p checking reexecute\n", __func__, zio);
+
 	if (zio->io_reexecute) {
+//		zfs_dbgmsg("%s: %p reexecuting\n", __func__, zio);
+
 		/*
 		 * This is a logical I/O that wants to reexecute.
 		 *
@@ -4306,13 +4399,17 @@ zio_done(zio_t *zio)
 		metaslab_fastwrite_unmark(zio->io_spa, zio->io_bp);
 	}
 
+//	zfs_dbgmsg("%s: %p checking io_done %p\n", __func__, zio, zio->io_done);
+
 	/*
 	 * It is the responsibility of the done callback to ensure that this
 	 * particular zio is no longer discoverable for adoption, and as
 	 * such, cannot acquire any new parents.
 	 */
-	if (zio->io_done)
+	if (zio->io_done) {
+//		zfs_dbgmsg("%s: %p doing io_done %p\n", __func__, zio);
 		zio->io_done(zio);
+	}
 
 	mutex_enter(&zio->io_lock);
 	zio->io_state[ZIO_WAIT_DONE] = 1;
@@ -4334,6 +4431,8 @@ zio_done(zio_t *zio)
 	} else {
 		zio_destroy(zio);
 	}
+
+//	zfs_dbgmsg("%s: %p done\n", __func__, zio);
 
 	return (ZIO_PIPELINE_STOP);
 }
@@ -4496,12 +4595,72 @@ zbookmark_subtree_completed(const dnode_phys_t *dnp,
 	    last_block) <= 0);
 }
 
+char *
+zio_flags_to_str(zio_t *zio)
+{
+	/*
+	 *          * Made with:
+	 *                   * grep -Pe '^\tZIO_FLAG_.+<<' include/sys/zio.h | \
+	 *                            * awk '{print "\t\""$1"\","}'
+	 *                                     */
+	const char *zio_flag_str[] = {
+		"ZIO_FLAG_DONT_AGGREGATE",
+		"ZIO_FLAG_IO_REPAIR",
+		"ZIO_FLAG_SELF_HEAL",
+		"ZIO_FLAG_RESILVER",
+		"ZIO_FLAG_SCRUB",
+		"ZIO_FLAG_SCAN_THREAD",
+		"ZIO_FLAG_PHYSICAL",
+		"ZIO_FLAG_CANFAIL",
+		"ZIO_FLAG_SPECULATIVE",
+		"ZIO_FLAG_CONFIG_WRITER",
+		"ZIO_FLAG_DONT_RETRY",
+		"ZIO_FLAG_DONT_CACHE",
+		"ZIO_FLAG_NODATA",
+		"ZIO_FLAG_INDUCE_DAMAGE",
+		"ZIO_FLAG_IO_ALLOCATING",
+		"ZIO_FLAG_IO_RETRY",
+		"ZIO_FLAG_PROBE",
+		"ZIO_FLAG_TRYHARD",
+		"ZIO_FLAG_OPTIONAL",
+		"ZIO_FLAG_DONT_QUEUE",
+		"ZIO_FLAG_DONT_PROPAGATE",
+		"ZIO_FLAG_IO_BYPASS",
+		"ZIO_FLAG_IO_REWRITE",
+		"ZIO_FLAG_RAW_COMPRESS",
+		"ZIO_FLAG_RAW_ENCRYPT",
+		"ZIO_FLAG_GANG_CHILD",
+		"ZIO_FLAG_DDT_CHILD",
+		"ZIO_FLAG_GODFATHER",
+		"ZIO_FLAG_NOPWRITE",
+		"ZIO_FLAG_REEXECUTED",
+		"ZIO_FLAG_DELEGATED",
+		"ZIO_FLAG_FASTWRITE",
+	};
+	int size = 0;
+	char *str;
+	char *pos;
+	for (int i = 0; i < ARRAY_SIZE(zio_flag_str); i++)
+		if (zio->io_flags & (1ULL << i))
+			size += strlen(zio_flag_str[i]) + 1;    /* +1 for ' ' */
+
+	size += 1; /* for terminating \0 */
+	str = kmem_alloc(size + 1, KM_SLEEP);
+	pos = str;
+	for (int i = 0; i < ARRAY_SIZE(zio_flag_str) && str != NULL; i++)
+		if (zio->io_flags & (1ULL << i))
+			pos += sprintf(pos, "%s ", zio_flag_str[i]);
+
+	return (str);
+}
+
 #if defined(_KERNEL) && defined(HAVE_SPL)
 EXPORT_SYMBOL(zio_type_name);
 EXPORT_SYMBOL(zio_buf_alloc);
 EXPORT_SYMBOL(zio_data_buf_alloc);
 EXPORT_SYMBOL(zio_buf_free);
 EXPORT_SYMBOL(zio_data_buf_free);
+EXPORT_SYMBOL(zio_is_countable_checksum_error);
 
 module_param(zio_delay_max, int, 0644);
 MODULE_PARM_DESC(zio_delay_max, "Max zio millisec delay before posting event");

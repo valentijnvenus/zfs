@@ -7,4 +7,5 @@ dist_pkgdata_SCRIPTS = \
 	zpool_status_003_pos.ksh \
 	zpool_status_-c_disable.ksh \
 	zpool_status_-c_homedir.ksh \
-	zpool_status_-c_searchpath.ksh
+	zpool_status_-c_searchpath.ksh \
+	zpool_status_-dpr.ksh

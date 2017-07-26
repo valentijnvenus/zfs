@@ -260,6 +260,9 @@ struct vdev {
 	zfs_ratelimit_t vdev_checksum_rl;
 };
 
+/* Module param to disable checksum and delay event ratelimiting. */
+extern int disable_error_event_ratelimit;
+
 #define	VDEV_RAIDZ_MAXPARITY	3
 
 #define	VDEV_PAD_SIZE		(8 << 10)

@@ -822,6 +822,67 @@ vdev_queue_last_offset(vdev_t *vd)
 	return (vd->vdev_queue.vq_last_offset);
 }
 
+/*
+ * Add any queued, non-active, speculative read IOs with creation time
+ * of 'txg' or older to our parent zio.
+ *
+ * Returns the number of IOs added.
+ */
+static int
+vdev_queue_collect_speculative_ios(vdev_t *vd, uint64_t txg, zio_t *pio)
+{
+	avl_tree_t *tree;
+	zio_t *zio;
+	vdev_queue_t *vq = &vd->vdev_queue;
+	int count = 0;
+
+	mutex_enter(&vq->vq_lock);
+	tree = vdev_queue_class_tree(vq, ZIO_PRIORITY_ASYNC_READ);
+
+	for (zio = avl_first(tree); zio;
+	    (zio = avl_walk(tree, zio, AVL_AFTER))) {
+		if (zio->io_flags & ZIO_FLAG_SPECULATIVE) {
+			if (zio->io_creation_txg <= txg) {
+				zio_add_child(pio, zio);
+				count++;
+			}
+		}
+	}
+
+	mutex_exit(&vq->vq_lock);
+
+	return (count);
+}
+
+/*
+ * Finish any queued, non-active, speculative read IOs with creation time
+ * of 'txg' or older.
+ */
+int
+vdev_queue_finish_old_speculative_ios(spa_t *spa, uint64_t txg)
+{
+	vdev_t *rvd = spa->spa_root_vdev;
+	zio_t *pio;
+	vdev_t *tmpvd = NULL;
+	int count = 0;
+
+	pio = zio_root(spa, NULL, 0, 0);
+	ASSERT(pio != NULL);
+
+	/* Iterate though all leaf vdevs */
+	while ((tmpvd = vdev_get_next_leaf(rvd, tmpvd)))
+		count += vdev_queue_collect_speculative_ios(tmpvd, txg, pio);
+
+	if (count > 0) {
+		zio_wait(pio);
+		// spa
+	} else {
+		/* TODO: Do I need to free pio here? */
+		;
+	}
+	return (count);
+}
+
 #if defined(_KERNEL) && defined(HAVE_SPL)
 module_param(zfs_vdev_aggregation_limit, int, 0644);
 MODULE_PARM_DESC(zfs_vdev_aggregation_limit, "Max vdev I/O aggregation size");

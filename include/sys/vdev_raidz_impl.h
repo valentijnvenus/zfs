@@ -29,6 +29,7 @@
 #include <sys/debug.h>
 #include <sys/kstat.h>
 #include <sys/abd.h>
+#include <sys/zio.h>
 
 #ifdef  __cplusplus
 extern "C" {
@@ -110,6 +111,7 @@ typedef struct raidz_col {
 	int rc_error;			/* I/O error for this device */
 	unsigned int rc_tried;		/* Did we attempt this I/O column? */
 	unsigned int rc_skipped;	/* Did we skip this I/O column? */
+	zio_t *zio;			/* Backpointer to zio for debug */
 } raidz_col_t;
 
 typedef struct raidz_map {

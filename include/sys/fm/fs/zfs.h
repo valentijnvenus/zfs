@@ -73,6 +73,11 @@ extern "C" {
 #define	FM_EREPORT_PAYLOAD_ZFS_VDEV_READ_ERRORS	"vdev_read_errors"
 #define	FM_EREPORT_PAYLOAD_ZFS_VDEV_WRITE_ERRORS "vdev_write_errors"
 #define	FM_EREPORT_PAYLOAD_ZFS_VDEV_CKSUM_ERRORS "vdev_cksum_errors"
+#define	FM_EREPORT_PAYLOAD_ZFS_VDEV_HEAL_READ_ERRORS	"vdev_heal_read_errors"
+#define	FM_EREPORT_PAYLOAD_ZFS_VDEV_HEAL_WRITE_ERRORS	"vdev_heal_write_errors"
+#define	FM_EREPORT_PAYLOAD_ZFS_VDEV_HEAL_CKSUM_ERRORS	"vdev_heal_cksum_errors"
+#define	FM_EREPORT_PAYLOAD_ZFS_VDEV_DELAY_ERRORS	"vdev_delay_errors"
+
 #define	FM_EREPORT_PAYLOAD_ZFS_PARENT_GUID	"parent_guid"
 #define	FM_EREPORT_PAYLOAD_ZFS_PARENT_TYPE	"parent_type"
 #define	FM_EREPORT_PAYLOAD_ZFS_PARENT_PATH	"parent_path"

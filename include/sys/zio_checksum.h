@@ -137,6 +137,10 @@ extern enum zio_checksum spa_dedup_checksum(spa_t *spa);
 extern void zio_checksum_templates_free(spa_t *spa);
 extern spa_feature_t zio_checksum_to_feature(enum zio_checksum cksum);
 
+extern boolean_t zio_is_countable_checksum_error(zio_t *zio);
+extern boolean_t zio_is_countable_checksum_error_leaf(zio_t *zio);
+
+
 #ifdef	__cplusplus
 }
 #endif

@@ -105,6 +105,7 @@ typedef struct mirror_child {
 	uint8_t		mc_tried;
 	uint8_t		mc_skipped;
 	uint8_t		mc_speculative;
+	zio_t		*zio;
 } mirror_child_t;
 
 typedef struct mirror_map {
@@ -326,7 +327,8 @@ static void
 vdev_mirror_child_done(zio_t *zio)
 {
 	mirror_child_t *mc = zio->io_private;
-
+//	if (zio->io_error)
+//		zfs_dbgmsg("%s: %p %s, mc %p, set io error\n", __func__, zio, zio->io_vd, mc);
 	mc->mc_error = zio->io_error;
 	mc->mc_tried = 1;
 	mc->mc_skipped = 0;
@@ -497,13 +499,16 @@ vdev_mirror_io_start(zio_t *zio)
 			 * data into zio->io_data in vdev_mirror_scrub_done.
 			 */
 			for (c = 0; c < mm->mm_children; c++) {
+				zio_t *tmpzio;
 				mc = &mm->mm_child[c];
-				zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
+
+				tmpzio = zio_vdev_child_io(zio, zio->io_bp,
 				    mc->mc_vd, mc->mc_offset,
 				    abd_alloc_sametype(zio->io_abd,
 				    zio->io_size), zio->io_size,
 				    zio->io_type, zio->io_priority, 0,
-				    vdev_mirror_scrub_done, mc));
+				    vdev_mirror_scrub_done, mc);
+				zio_nowait(tmpzio);
 			}
 			zio_execute(zio);
 			return;
@@ -512,6 +517,7 @@ vdev_mirror_io_start(zio_t *zio)
 		 * For normal reads just pick one child.
 		 */
 		c = vdev_mirror_child_select(zio);
+
 		children = (c >= 0);
 	} else {
 		ASSERT(zio->io_type == ZIO_TYPE_WRITE);
@@ -524,11 +530,18 @@ vdev_mirror_io_start(zio_t *zio)
 	}
 
 	while (children--) {
+		zio_t *tmpzio;
 		mc = &mm->mm_child[c];
-		zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
+
+		tmpzio = zio_vdev_child_io(zio, zio->io_bp,
 		    mc->mc_vd, mc->mc_offset, zio->io_abd, zio->io_size,
 		    zio->io_type, zio->io_priority, 0,
-		    vdev_mirror_child_done, mc));
+		    vdev_mirror_child_done, mc);
+
+		mc->zio = tmpzio;
+
+//		zfs_dbgmsg("%s: %p parent, %p child, %p mc\n", __func__, zio, tmpzio, mc);
+		zio_nowait(tmpzio);
 		c++;
 	}
 
@@ -570,6 +583,7 @@ vdev_mirror_io_done(zio_t *zio)
 	}
 
 	if (zio->io_type == ZIO_TYPE_WRITE) {
+
 		/*
 		 * XXX -- for now, treat partial writes as success.
 		 *
@@ -594,8 +608,33 @@ vdev_mirror_io_done(zio_t *zio)
 			 * to be able to detach it -- which requires all
 			 * writes to the old device to have succeeded.
 			 */
-			if (good_copies == 0 || zio->io_vd == NULL)
+			if (good_copies == 0 || zio->io_vd == NULL) {
 				zio->io_error = vdev_mirror_worst_error(mm);
+//				zfs_dbgmsg("%s: %p no good copies\n", __func__, zio);
+			} else {
+				/*
+				 * We have at least one good copy.  Update the
+				 * stats for the child writes that were
+				 * (non-fatally) bad.
+				 */
+				for (c = 0; c < mm->mm_children; c++) {
+					mc = &mm->mm_child[c];
+					vdev_stat_ex_t *vsx;
+
+					if (mc->mc_error == EIO) {
+						vsx = &mc->mc_vd->vdev_stat_ex;
+						mutex_enter(&mc->mc_vd->vdev_stat_lock);
+						vsx->vsx_heal_write_errors++;
+//						zfs_dbgmsg("%s: parent %p, child %p, mc %p healed %llu\n", __func__, zio, mc->zio, mc, vsx->vsx_heal_write_errors);
+						mutex_exit(&mc->mc_vd->vdev_stat_lock);
+					} else {
+//						 zfs_dbgmsg("%s: parent %p, child %p, mc %p other %d\n", __func__, zio, mc->zio, mc, mc->mc_error);
+					}
+				}
+			}
+		} else {
+			;
+//			zfs_dbgmsg("%s: %p all good\n", __func__, zio);
 		}
 		return;
 	}
@@ -631,6 +670,8 @@ vdev_mirror_io_done(zio_t *zio)
 		 * Use the good data we have in hand to repair damaged children.
 		 */
 		for (c = 0; c < mm->mm_children; c++) {
+			zio_t *newzio;
+			vdev_t *newvd;
 			/*
 			 * Don't rewrite known good children.
 			 * Not only is it unnecessary, it could
@@ -649,13 +690,23 @@ vdev_mirror_io_done(zio_t *zio)
 					continue;
 				mc->mc_error = SET_ERROR(ESTALE);
 			}
-
-			zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
+			newzio = zio_vdev_child_io(zio, zio->io_bp,
 			    mc->mc_vd, mc->mc_offset,
 			    zio->io_abd, zio->io_size,
 			    ZIO_TYPE_WRITE, ZIO_PRIORITY_ASYNC_WRITE,
 			    ZIO_FLAG_IO_REPAIR | (unexpected_errors ?
-			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL));
+			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL);
+
+			newvd = newzio->io_vd;
+			mutex_enter(&newvd->vdev_stat_lock);
+			if (mc->mc_error == ECKSUM) {
+				newvd->vdev_stat_ex.vsx_heal_checksum_errors++;
+                                zfs_dbgmsg("%s: %p healed checksum %d\n", __func__, mc->zio, newvd->vdev_stat_ex.vsx_heal_checksum_errors);
+			} else if (mc->mc_error == EIO)
+				newvd->vdev_stat_ex.vsx_heal_read_errors++;
+			mutex_exit(&newvd->vdev_stat_lock);
+
+			zio_nowait(newzio);
 		}
 	}
 }

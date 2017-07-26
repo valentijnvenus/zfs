@@ -1930,15 +1930,15 @@ metaslab_activate(metaslab_t *msp, uint64_t activation_weight)
 static void
 metaslab_passivate(metaslab_t *msp, uint64_t weight)
 {
-	ASSERTV(uint64_t size = weight & ~METASLAB_WEIGHT_TYPE);
+//	ASSERTV(uint64_t size = weight & ~METASLAB_WEIGHT_TYPE);
 
 	/*
 	 * If size < SPA_MINBLOCKSIZE, then we will not allocate from
 	 * this metaslab again.  In that case, it had better be empty,
 	 * or we would be leaving space on the table.
 	 */
-	ASSERT(size >= SPA_MINBLOCKSIZE ||
-	    range_tree_space(msp->ms_tree) == 0);
+//	ASSERT(size >= SPA_MINBLOCKSIZE ||
+//	    range_tree_space(msp->ms_tree) == 0);
 	ASSERT0(weight & METASLAB_ACTIVE_MASK);
 
 	msp->ms_activation_weight = 0;

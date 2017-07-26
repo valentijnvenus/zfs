@@ -134,6 +134,8 @@ extern int vdev_config_sync(vdev_t **svd, int svdcount, uint64_t txg);
 extern void vdev_state_dirty(vdev_t *vd);
 extern void vdev_state_clean(vdev_t *vd);
 
+extern vdev_t *vdev_get_next_leaf(vdev_t *rvd, vdev_t *prev_vd);
+
 typedef enum vdev_config_flag {
 	VDEV_CONFIG_SPARE = 1 << 0,
 	VDEV_CONFIG_L2CACHE = 1 << 1,
@@ -167,6 +169,9 @@ typedef enum {
 } vdev_labeltype_t;
 
 extern int vdev_label_init(vdev_t *vd, uint64_t txg, vdev_labeltype_t reason);
+
+extern void vdev_queue_drop_old_speculative_ios(vdev_t *vd, uint64_t txg);
+extern int vdev_queue_finish_old_speculative_ios(spa_t *spa, uint64_t txg);
 
 #ifdef	__cplusplus
 }
