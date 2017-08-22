@@ -254,7 +254,6 @@ static void
 vdev_mirror_child_done(zio_t *zio)
 {
 	mirror_child_t *mc = zio->io_private;
-	zfs_dbgmsg("%s: %p begin, err %d\n", __func__, zio, zio->io_error);
 
 	mc->mc_error = zio->io_error;
 	mc->mc_tried = 1;
@@ -420,7 +419,6 @@ vdev_mirror_io_start(zio_t *zio)
 	mirror_map_t *mm;
 	mirror_child_t *mc;
 	int c, children;
-	zfs_dbgmsg("%s: %p begin\n", __func__, zio);
 
 	mm = vdev_mirror_map_init(zio);
 
@@ -443,7 +441,6 @@ vdev_mirror_io_start(zio_t *zio)
 				    zio->io_size), zio->io_size,
 				    zio->io_type, zio->io_priority, 0,
 					vdev_mirror_scrub_done, mc);
-				zfs_dbgmsg("%s: %p scrub child %d, %p begin\n", __func__, zio, c, tmpzio);
 				zio_nowait(tmpzio);
 			}
 			zio_execute(zio);
@@ -453,7 +450,6 @@ vdev_mirror_io_start(zio_t *zio)
 		 * For normal reads just pick one child.
 		 */
 		c = vdev_mirror_child_select(zio);
-		zfs_dbgmsg("%s: %p regular read, picked child %d\n", __func__, zio, c);
 
 		children = (c >= 0);
 	} else {
@@ -474,7 +470,6 @@ vdev_mirror_io_start(zio_t *zio)
 		    mc->mc_vd, mc->mc_offset, zio->io_abd, zio->io_size,
 		    zio->io_type, zio->io_priority, 0,
 		    vdev_mirror_child_done, mc);
-		zfs_dbgmsg("%s: %p mirror child %d, %p begin\n", __func__, zio, c, tmpzio);
 		zio_nowait(tmpzio);
 		c++;
 	}
@@ -509,7 +504,6 @@ vdev_mirror_io_done(zio_t *zio)
 		mc = &mm->mm_child[c];
 
 		if (mc->mc_error) {
-			zfs_dbgmsg("%s: %p child %d/%d had error %d\n", __func__, zio, c,  mm->mm_children, mc->mc_error);
 			if (!mc->mc_skipped)
 				unexpected_errors++;
 		} else if (mc->mc_tried) {
@@ -544,6 +538,24 @@ vdev_mirror_io_done(zio_t *zio)
 			 */
 			if (good_copies == 0 || zio->io_vd == NULL)
 				zio->io_error = vdev_mirror_worst_error(mm);
+
+			/* 
+			 * We have at least one good copy.  Update the
+			 * stats for the child writes that were
+			 * (non-fatally) bad.
+			 */
+			for (c = 0; c < mm->mm_children; c++) {
+				mc = &mm->mm_child[c];
+				vdev_stat_ex_t *vsx;
+
+				if (mc->mc_error == EIO &&
+				    zio->io_type == ZIO_TYPE_WRITE) {
+					vsx = &mc->mc_vd->vdev_stat_ex;
+					mutex_enter(&mc->mc_vd->vdev_stat_lock);
+					vsx->vsx_heal_write_errors++;
+					mutex_exit(&mc->mc_vd->vdev_stat_lock);
+				}
+			}
 		}
 		return;
 	}
@@ -597,8 +609,7 @@ vdev_mirror_io_done(zio_t *zio)
 				    zio->io_txg, 1))
 					continue;
 				mc->mc_error = SET_ERROR(ESTALE);
-			}
-
+			} 
 			newzio = zio_vdev_child_io(zio, zio->io_bp,
                             mc->mc_vd, mc->mc_offset,
                             zio->io_abd, zio->io_size,
@@ -606,8 +617,12 @@ vdev_mirror_io_done(zio_t *zio)
                             ZIO_FLAG_IO_REPAIR | (unexpected_errors ?
                             ZIO_FLAG_SELF_HEAL : 0), NULL, NULL);
 
-			zfs_dbgmsg("%s: %p failed with err %d, sending out %p repair IO (unexpected_errors %d, good_copies %d, scrub? %d)\n",
-				__func__, zio, zio->io_error, newzio, unexpected_errors, good_copies, zio->io_flags & ZIO_FLAG_SCRUB ? 1 : 0);
+			mutex_enter(&newzio->io_vd->vdev_stat_lock);
+			if (mc->mc_error == ECKSUM)
+				newzio->io_vd->vdev_stat_ex.vsx_heal_checksum_errors++;
+			else if (mc->mc_error == EIO)
+				newzio->io_vd->vdev_stat_ex.vsx_heal_read_errors++;
+			mutex_exit(&newzio->io_vd->vdev_stat_lock);
 
 			zio_nowait(newzio);
 		}

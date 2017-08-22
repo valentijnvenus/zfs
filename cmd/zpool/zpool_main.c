@@ -1562,6 +1562,8 @@ typedef struct status_cbdata {
 	boolean_t	cb_first;
 	boolean_t	cb_dedup_stats;
 	boolean_t	cb_print_status;
+	boolean_t	cb_show_delays;
+	boolean_t	cb_show_healed;
 	vdev_cmd_data_list_t	*vcdl;
 } status_cbdata_t;
 
@@ -1671,10 +1673,48 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 	    name, state);
 
 	if (!isspare) {
-		zfs_nicenum(vs->vs_read_errors, rbuf, sizeof (rbuf));
-		zfs_nicenum(vs->vs_write_errors, wbuf, sizeof (wbuf));
-		zfs_nicenum(vs->vs_checksum_errors, cbuf, sizeof (cbuf));
+		uint64_t read_errors, write_errors, checksum_errors;
+		uint64_t heal_read_errors = 0, heal_write_errors = 0,
+		    heal_checksum_errors = 0, delays = 0;
+		if ( cb->cb_show_healed || cb->cb_show_delays) {
+			nvlist_t *nvx = NULL;
+			
+			VERIFY0(nvlist_lookup_nvlist(nv,
+			    ZPOOL_CONFIG_VDEV_STATS_EX, &nvx));
+
+			VERIFY0(nvlist_lookup_uint64(nvx,
+			    ZPOOL_CONFIG_VDEV_HEAL_READ_ERRORS,
+			    &heal_read_errors));
+			VERIFY0(nvlist_lookup_uint64(nvx,
+			    ZPOOL_CONFIG_VDEV_HEAL_WRITE_ERRORS,
+			    &heal_write_errors));
+			VERIFY0(nvlist_lookup_uint64(nvx,
+			    ZPOOL_CONFIG_VDEV_HEAL_CHECKSUM_ERRORS,
+			    &heal_checksum_errors));
+			VERIFY0(nvlist_lookup_uint64(nvx,
+			    ZPOOL_CONFIG_VDEV_DELAYS, &delays));
+
+		}
+		read_errors = vs->vs_read_errors;
+		write_errors = vs->vs_write_errors;
+		checksum_errors = vs->vs_checksum_errors;
+
+		zfs_nicenum(read_errors, rbuf, sizeof (rbuf));
+		zfs_nicenum(write_errors, wbuf, sizeof (wbuf));
+		zfs_nicenum(checksum_errors, cbuf, sizeof (cbuf));
 		(void) printf(" %5s %5s %5s", rbuf, wbuf, cbuf);
+
+		if (cb->cb_show_healed) {
+			zfs_nicenum(heal_read_errors, rbuf, sizeof (rbuf));
+			zfs_nicenum(heal_write_errors, wbuf, sizeof (rbuf));
+			zfs_nicenum(heal_checksum_errors, cbuf, sizeof (cbuf));
+			(void) printf(" %5s %5s %5s", rbuf, wbuf, cbuf);
+		}
+		if (cb->cb_show_delays) {
+			zfs_nicenum(delays, rbuf, sizeof (rbuf));
+			(void) printf("  %5s", rbuf);
+		}
+
 	}
 
 	if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_NOT_PRESENT,
@@ -6471,10 +6511,23 @@ status_callback(zpool_handle_t *zhp, void *data)
 		if (cbp->cb_namewidth < 10)
 			cbp->cb_namewidth = 10;
 
-		(void) printf(gettext("config:\n\n"));
+		(void) printf(gettext("config:\n"));
+		if (cbp->cb_show_healed) {
+			(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s     Non-Fatal"),
+			    cbp->cb_namewidth, "    ", "     ", "     ", "    ",
+			    "     ");
+		}
+		printf("\n");
+
 		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s"),
 		    cbp->cb_namewidth, "NAME", "STATE", "READ", "WRITE",
 		    "CKSUM");
+
+		if (cbp->cb_show_healed)
+			(void) printf(gettext("  READ WRITE CKSUM"));
+
+		if (cbp->cb_show_delays)
+			(void) printf(gettext("  DELAY"));
 
 		if (cbp->vcdl != NULL)
 			print_cmd_columns(cbp->vcdl, 0);
@@ -6539,10 +6592,11 @@ status_callback(zpool_handle_t *zhp, void *data)
 }
 
 /*
- * zpool status [-c [script1,script2,...]] [-gLPvx] [-T d|u] [pool] ...
+ * zpool status [-c [script1,script2,...]] [-dgLPsSvx] [-T d|u] [pool] ...
  *              [interval [count]]
  *
  *	-c CMD	For each vdev, run command CMD
+ *	-d	Display IO delays column
  *	-g	Display guid for individual vdev name.
  *	-L	Follow links when resolving vdev path name.
  *	-P	Display full path for vdev name.
@@ -6550,6 +6604,7 @@ status_callback(zpool_handle_t *zhp, void *data)
  *	-x	Display only pools with potential problems
  *	-D	Display dedup status (undocumented)
  *	-T	Display a timestamp in date(1) or Unix format
+ *	-s	Display self-healing stats in seperate column.
  *
  * Describes the health status of all pools or some subset.
  */
@@ -6564,7 +6619,7 @@ zpool_do_status(int argc, char **argv)
 	char *cmd = NULL;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "c:gLPvxDT:")) != -1) {
+	while ((c = getopt(argc, argv, "c:dgLPvxDsT:")) != -1) {
 		switch (c) {
 		case 'c':
 			if (cmd != NULL) {
@@ -6590,6 +6645,9 @@ zpool_do_status(int argc, char **argv)
 			}
 			cmd = optarg;
 			break;
+		case 'd':
+			cb.cb_show_delays = B_TRUE;
+			break;
 		case 'g':
 			cb.cb_name_flags |= VDEV_NAME_GUID;
 			break;
@@ -6610,6 +6668,9 @@ zpool_do_status(int argc, char **argv)
 			break;
 		case 'T':
 			get_timestamp_arg(*optarg);
+			break;
+		case 's':
+			cb.cb_show_healed = B_TRUE;
 			break;
 		case '?':
 			if (optopt == 'c') {

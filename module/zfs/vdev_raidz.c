@@ -2272,17 +2272,27 @@ done:
 		 * Use the good data we have in hand to repair damaged children.
 		 */
 		for (c = 0; c < rm->rm_cols; c++) {
+			zio_t *newzio;
 			rc = &rm->rm_col[c];
 			cvd = vd->vdev_child[rc->rc_devidx];
 
 			if (rc->rc_error == 0)
 				continue;
 
-			zio_nowait(zio_vdev_child_io(zio, NULL, cvd,
+			newzio = zio_vdev_child_io(zio, NULL, cvd,
 			    rc->rc_offset, rc->rc_abd, rc->rc_size,
 			    ZIO_TYPE_WRITE, ZIO_PRIORITY_ASYNC_WRITE,
 			    ZIO_FLAG_IO_REPAIR | (unexpected_errors ?
-			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL));
+			    ZIO_FLAG_SELF_HEAL : 0), NULL, NULL);
+
+			mutex_enter(&newzio->io_vd->vdev_stat_lock);
+			if (rc->rc_error == ECKSUM)
+				newzio->io_vd->vdev_stat_ex.vsx_heal_checksum_errors++;
+			else if (rc->rc_error == EIO)
+				newzio->io_vd->vdev_stat_ex.vsx_heal_read_errors++;
+			mutex_exit(&newzio->io_vd->vdev_stat_lock);
+
+			zio_nowait(newzio);
 		}
 	}
 }

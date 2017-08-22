@@ -464,6 +464,9 @@ struct zio {
 
 	/* Taskq dispatching state */
 	taskq_ent_t	io_tqent;
+
+	/* Current txg at zio creation time */
+	uint64_t	io_creation_txg;
 };
 
 extern int zio_bookmark_compare(const void *, const void *);

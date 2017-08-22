@@ -6717,6 +6717,101 @@ spa_sync_upgrades(spa_t *spa, dmu_tx_t *tx)
 	rrw_exit(&dp->dp_config_rwlock, FTAG);
 }
 
+
+/*
+ * Utility function to return the next vdev leaf.  Useful for iterating over
+ * all leaf vdevs under a root vdev:
+ *
+ *	 vdev_t leaf_vd = NULL;
+ *	 while ((leaf_vd = vdev_get_next_leaf(root_vd, leaf_vd)))
+ * 		zfs_dbgmsg("Leaf is %s\n", leaf_vd->vdev_path);
+ *
+ * Returns next leaf vdev found, or NULL if there are no more leaf vdevs.
+ */
+vdev_t *
+vdev_get_next_leaf(vdev_t *rvd, vdev_t *prev_vd)
+{
+	boolean_t seen_prev = B_FALSE;
+
+	/* This is our first run though, return the first leaf we find */
+	if (prev_vd == NULL)
+		seen_prev = B_TRUE;
+
+	/* Iterate though our root vdev's children */
+	for (int i = 0; i < rvd->vdev_children; i++) {
+		vdev_t *tmpvd = rvd->vdev_child[i];
+
+		/* Are we a leaf? */
+		if (tmpvd->vdev_ops->vdev_op_leaf) {
+			if (seen_prev) {
+				/* Found it, we're done */
+				return (tmpvd);
+			}
+		} else {
+			/* 
+			 * We're a top level vdev, look though all our children
+			 * for a leaf;
+			 */
+			tmpvd = vdev_get_next_leaf(tmpvd, prev_vd);
+			if (tmpvd != NULL)
+				return (tmpvd);
+		}
+
+		if (prev_vd == tmpvd)
+			seen_prev = B_TRUE;
+	}
+	return (NULL);
+}
+#if 0
+/*
+ * Utility function to return the next vdev leaf.  Useful for iterating over
+ * all vdevs under a root vdev.
+ */
+vdev_t *
+vdev_get_next_leaf(vdev_t *root_vd, vdev_t *prev_vd)
+{
+	boolean_t seen_prev = B_FALSE;
+
+	/* This is our first run though, return the first leaf we find */
+	if (prev_vd == NULL)
+		seen_prev = B_TRUE;
+
+	/* Iterate though our root vdev's children */
+	for (int i = 0; i < rvd->vdev_children; i++) {
+		vdev_t tmpvd = rvd->vdev_child[i];
+
+		if (seen_prev && tmpvd->vdev_ops->vdev_op_leaf)
+			return (tmpvd);
+
+		if (prev_vd == tmpvd && !seen_prev)
+			seen_prev = B_TRUE;
+
+		/* Iterate though the top-level vdev's children */	
+		for (j = 0; j < tmpvd->vdev_children; j++) {
+			vdev_t tmpvd2 = tmpvd->vdev_child[j];
+
+			if (seen_prev && tmpvd->vdev_ops->vdev_op_leaf)
+				return (tmpvd);
+
+			if (prev_vd == tmpvd2 && !seen_prev)
+				seen_prev = B_TRUE;
+		}
+	}
+	return (NULL);
+}
+#endif
+
+void
+spa_drop_old_speculative_ios(spa_t *spa, uint64_t txg)
+{
+	vdev_t *rvd = spa->spa_root_vdev;
+	vdev_t *tmpvd = NULL;
+
+	/* Iterate though all leaf vdevs */
+	while ((tmpvd = vdev_get_next_leaf(rvd, tmpvd)))
+		vdev_queue_drop_old_speculative_ios(tmpvd, txg);
+}
+
 /*
  * Sync the specified transaction group.  New blocks may be dirtied as
  * part of the process, so we iterate until it converges.
@@ -6739,6 +6834,7 @@ spa_sync(spa_t *spa, uint64_t txg)
 
 	VERIFY(spa_writeable(spa));
 
+	spa_drop_old_speculative_ios(spa, txg);
 	/*
 	 * Lock out configuration changes.
 	 */
@@ -6901,6 +6997,7 @@ spa_sync(spa_t *spa, uint64_t txg)
 		}
 
 	} while (dmu_objset_is_dirty(mos, txg));
+
 
 #ifdef ZFS_DEBUG
 	if (!list_is_empty(&spa->spa_config_dirty_list)) {

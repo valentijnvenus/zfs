@@ -173,6 +173,12 @@ int zfs_vdev_aggregation_limit = SPA_OLD_MAXBLOCKSIZE;
 int zfs_vdev_read_gap_limit = 32 << 10;
 int zfs_vdev_write_gap_limit = 4 << 10;
 
+/* 
+ * If set to one, process all old speculative IOs at the end of a txg.
+ * Otherwise drop the IOs.
+ * */
+int zfs_vdev_process_old_speculative_ios = 1;
+
 /*
  * Define the queue depth percentage for each top-level. This percentage is
  * used in conjunction with zfs_vdev_async_max_active to determine how many
@@ -827,6 +833,30 @@ void
 vdev_queue_register_lastoffset(vdev_t *vd, zio_t *zio)
 {
 	vd->vdev_queue.vq_lastoffset = zio->io_offset + zio->io_size;
+}
+
+void
+vdev_queue_drop_zio(zio_t *zio)
+{
+	zio->io_flags |= ZIO_FLAG_NODATA;
+	zio->io_done(zio);
+}
+
+/*
+ * Drop any queued, non-active, speculative read IOs with a txg older than 'txg'
+ */
+void
+vdev_queue_drop_old_speculative_ios(vdev_t *vd, uint64_t txg)
+{
+	avl_tree_t *tree;
+	zio_t *zio;
+	tree = vdev_queue_class_tree(&vd->vdev_queue, ZIO_PRIORITY_ASYNC_READ);
+
+        for (zio = avl_first(tree); zio;
+            (zio = avl_walk(tree, zio, AVL_AFTER)))
+		if (zio->io_flags & ZIO_FLAG_SPECULATIVE)
+			if (zio->io_creation_txg < txg)
+				vdev_queue_drop_zio(zio);
 }
 
 #if defined(_KERNEL) && defined(HAVE_SPL)

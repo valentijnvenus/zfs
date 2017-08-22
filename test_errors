@@ -28,8 +28,8 @@ function clear_all
 
 function export_import
 {
-	sudo ./cmd/zpool/zpool export mypool
-	sudo ./cmd/zpool/zpool import mypool
+	sudo ./cmd/zpool/zpool export mypool2
+	sudo ./cmd/zpool/zpool import mypool2
 }
 
 function header
@@ -39,7 +39,7 @@ function header
 
 function print_stats
 {
-	sudo ./cmd/zpool/zpool status 
+	sudo ./cmd/zpool/zpool status -s
 	if [ "$read_err" == "1" ] ; then
 		echo -n "Read errors: "
 		cat /proc/spl/kstat/zfs/dbgmsg  | grep "zio_err 5," | wc -l
@@ -54,7 +54,7 @@ function print_stats
 	echo ""
 }
 
-ourfiles="/tmp/test_image1 /tmp/test_image2 /tmp/mypool"
+ourfiles="/tmp/test_image1 /tmp/test_image2 /tmp/mypool2"
 for i in $ourfiles ; do
 	if [ -e "$i" ] ; then
 		echo "$i already exists, exiting"
@@ -73,16 +73,16 @@ sudo losetup /dev/loop101 /tmp/test_image2
 sudo mdadm -B /dev/md100 -l faulty -n1 /dev/loop100
 sudo mdadm -B /dev/md101 -l faulty -n1 /dev/loop101
 
-sudo ./cmd/zpool/zpool create -m /tmp/mypool mypool mirror /dev/md100 /dev/md101
-sudo ./cmd/zfs/zfs set compression=off mypool
+sudo ./cmd/zpool/zpool create -m /tmp/mypool2 mypool2 mirror /dev/md100 /dev/md101
+sudo ./cmd/zfs/zfs set compression=off mypool2
 
-sudo ./tests/zfs-tests/cmd/file_write/file_write -o overwrite -f /tmp/mypool/bigfile -b 1048576 -c 400 -d R
-sudo ./cmd/zpool/zpool export mypool
+sudo ./tests/zfs-tests/cmd/file_write/file_write -o overwrite -f /tmp/mypool2/bigfile -b 1048576 -c 400 -d R
+sudo ./cmd/zpool/zpool export mypool2
 
 header "Scrambling pool"
 sudo dd if=/dev/zero of=/tmp/test_image1 bs=10M seek=15 count=10 conv=notrunc
 clear_all
-sudo ./cmd/zpool/zpool import mypool
+sudo ./cmd/zpool/zpool import mypool2
 header "Scrambled pool initial status:"
 print_stats
 
@@ -92,17 +92,17 @@ for i in {1..10} ; do
 	export_import
 
 	# wait for mount
-	while [ ! -e /tmp/mypool/bigfile ] ; do sleep 1 ; done
+	while [ ! -e /tmp/mypool2/bigfile ] ; do sleep 1 ; done
 
 	clear_all
 
 
 	if [ "$read_err" == "1" ] ; then
 		# create error on every read
-		sudo mdadm -G /dev/md100 --layout=rt1
+		sudo mdadm -G /dev/md100 --layout=wt1
 	fi
 
-	cat /tmp/mypool/bigfile > /dev/null
+	cat /tmp/mypool2/bigfile > /dev/null
 
 	if [ "$read_err" == "1" ] ; then
 		# disable read errors
@@ -111,24 +111,26 @@ for i in {1..10} ; do
 
 	echo "Status after reading file:"
 	print_stats
+	cat /proc/spl/kstat/zfs/dbgmsg | egrep 'zio|vdev' > /tmp/stage$i
+
 
 	echo ""
 done
 
 header "Test scrubbing a pool"
 
-sudo ./cmd/zpool/zpool scrub mypool
-sudo ./cmd/zpool/zpool scrub mypool
-sudo ./cmd/zpool/zpool export mypool
+sudo ./cmd/zpool/zpool scrub mypool2
+sudo ./cmd/zpool/zpool scrub mypool2
+sudo ./cmd/zpool/zpool export mypool2
 sudo dd if=/dev/zero of=/tmp/test_image1 bs=10M seek=15 count=10 conv=notrunc
 clear_all
-sudo ./cmd/zpool/zpool import mypool
+sudo ./cmd/zpool/zpool import mypool2
 if [ "$read_err" == "1" ] ; then
 	# create error on every read
 	sudo mdadm -G /dev/md100 --layout=rt1
 fi
 
-sudo ./cmd/zpool/zpool scrub mypool
+sudo ./cmd/zpool/zpool scrub mypool2
 
 if [ "$read_err" == "1" ] ; then
 	# disable read errors
@@ -141,7 +143,7 @@ print_stats
 
 
 header "Cleaning up"
-sudo ./cmd/zpool/zpool export mypool
+sudo ./cmd/zpool/zpool export mypool2
 sudo mdadm --stop /dev/md100
 sudo mdadm --stop /dev/md101
 sleep 2
@@ -150,6 +152,6 @@ sudo mdadm --remove /dev/md101
 
 sudo losetup -d /dev/loop100
 sudo losetup -d /dev/loop101
-sudo rmdir /tmp/mypool
+sudo rmdir /tmp/mypool2
 
 rm -f /tmp/test_image1 /tmp/test_image2

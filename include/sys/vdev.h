@@ -169,6 +169,9 @@ typedef enum {
 
 extern int vdev_label_init(vdev_t *vd, uint64_t txg, vdev_labeltype_t reason);
 
+extern void vdev_queue_drop_old_speculative_ios(vdev_t *vd, uint64_t txg);
+
+
 #ifdef	__cplusplus
 }
 #endif
