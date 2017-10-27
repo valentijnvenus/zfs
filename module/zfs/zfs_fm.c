@@ -344,14 +344,10 @@ zfs_ereport_start(nvlist_t **ereport_out, nvlist_t **detector_out,
 
 		if (vsx != NULL) {
 			fm_payload_set(ereport,
-			    FM_EREPORT_PAYLOAD_ZFS_VDEV_HEAL_READ_ERRORS,
-			    DATA_TYPE_UINT64, vsx->vsx_heal_read_errors,
-			    FM_EREPORT_PAYLOAD_ZFS_VDEV_HEAL_WRITE_ERRORS,
-			    DATA_TYPE_UINT64, vsx->vsx_heal_write_errors,
-			    FM_EREPORT_PAYLOAD_ZFS_VDEV_HEAL_CKSUM_ERRORS,
-			    DATA_TYPE_UINT64, vsx->vsx_heal_checksum_errors,
-			    FM_EREPORT_PAYLOAD_ZFS_VDEV_DELAY_ERRORS,
-			    DATA_TYPE_UINT64, vsx->vsx_delay_errors,
+			    FM_EREPORT_PAYLOAD_ZFS_VDEV_HEALS,
+			    DATA_TYPE_UINT64, vsx->vsx_heals,
+			    FM_EREPORT_PAYLOAD_ZFS_VDEV_DELAYS,
+			    DATA_TYPE_UINT64, vsx->vsx_delays,
 			    NULL);
 		}
 

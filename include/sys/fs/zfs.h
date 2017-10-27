@@ -643,12 +643,10 @@ typedef struct zpool_rewind_policy {
 #define	ZPOOL_CONFIG_VDEV_AGG_SCRUB_HISTO	"vdev_agg_scrub_histo"
 
 /* Self-heal IO stats */
-#define	ZPOOL_CONFIG_VDEV_HEAL_CHECKSUM_ERRORS	"vdev_heal_checksum_errors"
-#define	ZPOOL_CONFIG_VDEV_HEAL_READ_ERRORS	"vdev_heal_read_errors"
-#define	ZPOOL_CONFIG_VDEV_HEAL_WRITE_ERRORS	"vdev_heal_write_errors"
+#define	ZPOOL_CONFIG_VDEV_HEALS			"vdev_heals"
 
 /* Number of IO delays */
-#define	ZPOOL_CONFIG_VDEV_DELAY_ERRORS		"vdev_delay_errors"
+#define	ZPOOL_CONFIG_VDEV_DELAYS		"vdev_delays"
 
 /* vdev enclosure sysfs path */
 #define	ZPOOL_CONFIG_VDEV_ENC_SYSFS_PATH	"vdev_enc_sysfs_path"
@@ -976,20 +974,8 @@ typedef struct vdev_stat_ex {
 	uint64_t vsx_agg_histo[ZIO_PRIORITY_NUM_QUEUEABLE]
 	    [VDEV_RQ_HISTO_BUCKETS];
 
-	/*
-	 * If we hit a read or checksum error, and the data can be
-	 * reconstructed from another vdev in the pool, then it's considered
-	 * a "self-heal" and not counted in the normal vs_read_errors &
-	 * vs_checksum_errors stats, a.k.a the error stats that get
-	 * displayed in zpool status.
-	 *
-	 * Since we do want to know about self-healing IOs, we keep these
-	 * additional counters.
-	 */
-	uint64_t vsx_heal_checksum_errors;
-	uint64_t vsx_heal_read_errors;
-	uint64_t vsx_heal_write_errors;
-	uint64_t vsx_delay_errors;
+	uint64_t vsx_heals;
+	uint64_t vsx_delays;
 
 } vdev_stat_ex_t;
 

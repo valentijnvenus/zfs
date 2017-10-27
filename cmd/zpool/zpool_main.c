@@ -1677,23 +1677,15 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 
 	if (!isspare) {
 		uint64_t read_errors, write_errors, checksum_errors;
-		uint64_t heal_read_errors = 0, heal_write_errors = 0,
-		    heal_checksum_errors = 0, delays = 0;
+		uint64_t heals = 0, delays = 0;
 		if (cb->cb_show_healed || cb->cb_show_delays) {
 			nvlist_t *nvx = NULL;
 			VERIFY0(nvlist_lookup_nvlist(nv,
 			    ZPOOL_CONFIG_VDEV_STATS_EX, &nvx));
 			VERIFY0(nvlist_lookup_uint64(nvx,
-			    ZPOOL_CONFIG_VDEV_HEAL_READ_ERRORS,
-			    &heal_read_errors));
+			    ZPOOL_CONFIG_VDEV_HEALS, &heals));
 			VERIFY0(nvlist_lookup_uint64(nvx,
-			    ZPOOL_CONFIG_VDEV_HEAL_WRITE_ERRORS,
-			    &heal_write_errors));
-			VERIFY0(nvlist_lookup_uint64(nvx,
-			    ZPOOL_CONFIG_VDEV_HEAL_CHECKSUM_ERRORS,
-			    &heal_checksum_errors));
-			VERIFY0(nvlist_lookup_uint64(nvx,
-			    ZPOOL_CONFIG_VDEV_DELAY_ERRORS, &delays));
+			    ZPOOL_CONFIG_VDEV_DELAYS, &delays));
 		}
 		read_errors = vs->vs_read_errors;
 		write_errors = vs->vs_write_errors;
@@ -1710,14 +1702,11 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 		}
 
 		if (cb->cb_show_healed) {
-			zfs_nicenum(heal_read_errors, rbuf, sizeof (rbuf));
-			zfs_nicenum(heal_write_errors, wbuf, sizeof (rbuf));
-			zfs_nicenum(heal_checksum_errors, cbuf, sizeof (cbuf));
+			zfs_nicenum(heals, rbuf, sizeof (rbuf));
 			if (cb->cb_literal) {
-				printf(" %5lu %5lu %5lu", heal_read_errors,
-				    heal_write_errors, heal_checksum_errors);
+				printf(" %5lu", heals);
 			} else {
-				printf(" %5s %5s %5s", rbuf, wbuf, cbuf);
+				printf(" %5s", rbuf);
 			}
 		}
 		if (cb->cb_show_delays) {
@@ -1725,7 +1714,7 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 			if (cb->cb_literal)
 				printf("  %5lu", delays);
 			else
-				printf("  %5s", rbuf);
+				printf(" %5s", rbuf);
 		}
 
 	}
@@ -6563,11 +6552,6 @@ status_callback(zpool_handle_t *zhp, void *data)
 			cbp->cb_namewidth = 10;
 
 		(void) printf(gettext("config:\n"));
-		if (cbp->cb_show_healed) {
-			(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s     "
-			    "Recovered"), cbp->cb_namewidth, "    ", "     ",
-			    "     ", "    ", "     ");
-		}
 		printf("\n");
 
 		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s"),
@@ -6575,10 +6559,10 @@ status_callback(zpool_handle_t *zhp, void *data)
 		    "CKSUM");
 
 		if (cbp->cb_show_healed)
-			(void) printf(gettext("  READ WRITE CKSUM"));
+			(void) printf(gettext("  HEAL"));
 
 		if (cbp->cb_show_delays)
-			(void) printf(gettext("  DELAY"));
+			(void) printf(gettext(" DELAY"));
 
 		if (cbp->vcdl != NULL)
 			print_cmd_columns(cbp->vcdl, 0);

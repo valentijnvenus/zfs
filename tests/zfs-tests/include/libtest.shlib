@@ -2129,6 +2129,17 @@ function is_pool_scrub_paused #pool <verbose>
 	return $?
 }
 
+# Start a scrub and return after the scrub is finished
+#
+# $1:	Pool name
+function scrub_and_wait
+{
+	zpool scrub "$1"
+	while ! is_pool_scrubbed "$1" ; do
+		sleep 1
+	done
+}
+
 #
 # Use create_pool()/destroy_pool() to clean up the information in
 # in the given disk to avoid slice overlapping.

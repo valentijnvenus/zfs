@@ -88,6 +88,7 @@ zpool events -c
 
 
 log_must eval echo 0 > /sys/module/zfs/parameters/zfs_spa_forced_spec_txgs_back
+log_must eval echo 1 > /sys/module/zfs/parameters/disable_auto_resilver
 
 if false ; then
 for i in mirror raidz1 ; do
@@ -119,7 +120,7 @@ DEFAULT_FILESIZE=1048576
 # Common function for running correctable/un-correctable read/write tests
 #
 # $1:	Operation to preform: "read" "write" or "scrub"
-# $2:	Error to inject: "read" "write" or "checksum"
+# $2:	Error to inject: "read" "write" or "corrupt" (checksum)
 # $3	Recover or not: "recover" to test recoverable errors.  "error" to force
 #	uncorrectable errors.
 # $4	(optional) File size to write.  If not set, use $DEFAULT_FILESIZE.
@@ -152,9 +153,27 @@ function do_test {
 	if [ "$OP" == "read" ] ; then
 		cat $MOUNTDIR/file > /dev/null || true
 	elif [ "$OP" == "write" ] ; then
-		mkfile $FILESIZE $MOUNTDIR/file || true
+		log_must mkfile 100000 $MOUNTDIR/file || true
+		sync
+		log_note "$(zpool status -r)"
+		log_must zinject -c all
+		log_note "scrubbing..."
+#		scrub_and_wait $POOL || true
+
+		zpool clear $POOL
+		for i in {1..10} ; do
+			log_note "#### $i ####"
+			log_note "$(zpool status -r)"
+			sleep 1
+		done
+		zpool scrub $POOL
+		sleep 1
+#		scrub_and_wait $POOL || true
+#		cat $MOUNTDIR/file &> /dev/null
+
+		log_note "$(zpool status -r)"
 	else
-		zpool scrub $POOL || true
+		scrub_and_wait $POOL || true
 	fi
 	sync
 
@@ -165,30 +184,28 @@ function do_test {
 		done
 	fi
 
-log_note "$(zpool status -r)"
+	log_note "$(zpool status -r)"
 
 	# Get error stats line for the pool
 	LINE=$(zpool status -p -r | grep $POOL | grep -v 'pool:')
 	if [ "$ERR" == "read" ] ; then
-		RECOVERED=$(echo "$LINE" | awk '{print $6}')
 		ERRORS=$(echo "$LINE" | awk '{print $3}')
 	elif [ "$ERR" == "write" ] ; then
-		RECOVERED=$(echo "$LINE" | awk '{print $7}')
 		ERRORS=$(echo "$LINE" | awk '{print $4}')
 	else
-		RECOVERED=$(echo "$LINE" | awk '{print $8}')
 		ERRORS=$(echo "$LINE" | awk '{print $5}')
 	fi
+	RECOVERED=$(echo "$LINE" | awk '{print $6}')
 
 	if [ "$RECOVER" == "recover" ] ; then	
 		if [ "$RECOVERED" -le 0 ] ; then
 			log_note "ERROR: $RECOVERED recovered ${ERR}s while testing ${OP}s on $POOLTYPE"
 			cleanup
 			exit
-		elif [ "$RECOVERED" -eq "$ERRORS" ] ; then
-			log_note "Correctly saw $RECOVERED recovered ${ERR}s == $ERRORS errors while testing ${OP}s on $POOLTYPE"
+		elif [ "$RECOVERED" -le "$ERRORS" ] ; then
+			log_note "Correctly saw $RECOVERED recovered ${ERR}s <= $ERRORS errors while testing ${OP}s on $POOLTYPE"
 		else
-			log_note "ERROR: $RECOVERED recovered ${ERR}s != $ERRORS errors while testing ${OP}s on $POOLTYPE"
+			log_note "ERROR: $RECOVERED recovered ${ERR}s > $ERRORS errors while testing ${OP}s on $POOLTYPE"
 			cleanup
 			exit
 		fi
@@ -196,7 +213,7 @@ log_note "$(zpool status -r)"
 		if [ "$ERRORS" -gt "$RECOVERED" ] ; then
 			log_note "Correctly saw $ERRORS ${ERR} errors > $RECOVERED recovered while testing ${OP}s on $POOLTYPE"
 		else
-			log_note "ERROR: $ERRORS ${ERR} errors <= $RECOVERED recovered while testing ${OP}s on $POOLTYPE"
+			log_note "ERROR: $ERRORS ${ERR} errors < $RECOVERED recovered while testing ${OP}s on $POOLTYPE"
 			cleanup
 			exit
 		fi
@@ -205,16 +222,20 @@ log_note "$(zpool status -r)"
 
 
 	log_must zinject -c all
-	zpool clear $POOL
+	log_must zpool clear $POOL
 }
 
-for i in mirror raidz1 ; do 
+for i in raidz mirror ; do 
 	setup "$i"
 	log_must mkfile $DEFAULT_FILESIZE $MOUNTDIR/file
 
 	export_import
+	do_test write write recover
 
+
+	break
 	do_test read corrupt recover
+
 	do_test scrub corrupt recover
 
 	export_import
@@ -223,7 +244,7 @@ for i in mirror raidz1 ; do
 
 	export_import
 	do_test read read recover
-	do_test write write recover
+#	do_test write write recover
 	log_must mkfile $DEFAULT_FILESIZE $MOUNTDIR/file
 	export_import
 	do_test scrub read recover
@@ -231,7 +252,7 @@ for i in mirror raidz1 ; do
 
 	do_test read read error 
 	do_test scrub read error
-	do_test write write error
+#	do_test write write error
 
 	# Our last tests tested tons of write errors to our file, so we can't gurantee
 	# the file is large enough to scrub.  Re-write the file.
@@ -240,5 +261,5 @@ for i in mirror raidz1 ; do
 
 	zpool destroy $POOL
 done
-cleanup
+#cleanup
 

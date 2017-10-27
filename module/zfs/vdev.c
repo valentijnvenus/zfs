@@ -361,7 +361,6 @@ vdev_alloc_common(spa_t *spa, uint_t id, uint64_t guid, vdev_ops_t *ops)
 	 * and checksum events so that we don't overwhelm ZED with thousands
 	 * of events when a disk is acting up.
 	 */
-
 	zfs_ratelimit_init(&vd->vdev_delay_rl, DELAYS_PER_SECOND, 1);
 	zfs_ratelimit_init(&vd->vdev_checksum_rl, CHECKSUMS_PER_SECOND, 1);
 
@@ -2793,9 +2792,8 @@ vdev_clear(spa_t *spa, vdev_t *vd)
 	vd->vdev_stat.vs_read_errors = 0;
 	vd->vdev_stat.vs_write_errors = 0;
 	vd->vdev_stat.vs_checksum_errors = 0;
-	vd->vdev_stat_ex.vsx_heal_read_errors = 0;
-	vd->vdev_stat_ex.vsx_heal_write_errors = 0;
-	vd->vdev_stat_ex.vsx_heal_checksum_errors = 0;
+	vd->vdev_stat_ex.vsx_heals = 0;
+	vd->vdev_stat_ex.vsx_delays = 0;
 
 	for (c = 0; c < vd->vdev_children; c++)
 		vdev_clear(spa, vd->vdev_child[c]);
@@ -2914,11 +2912,14 @@ vdev_get_child_stat(vdev_t *cvd, vdev_stat_t *vs, vdev_stat_t *cvs)
 		vs->vs_bytes[t] += cvs->vs_bytes[t];
 	}
 
-	vs->vs_read_errors += cvs->vs_read_errors;
-	vs->vs_write_errors += cvs->vs_write_errors;
-	vs->vs_checksum_errors += cvs->vs_checksum_errors;
-
 	cvs->vs_scan_removing = cvd->vdev_removing;
+}
+
+/* Return true if vdev is a root vdev */
+static boolean_t
+vdev_is_root(vdev_t *vd)
+{
+	return (vd->vdev_parent == NULL);
 }
 
 /*
@@ -2953,10 +2954,6 @@ vdev_get_child_stat_ex(vdev_t *cvd, vdev_stat_ex_t *vsx, vdev_stat_ex_t *cvsx)
 			vsx->vsx_agg_histo[t][b] += cvsx->vsx_agg_histo[t][b];
 	}
 
-	vsx->vsx_heal_checksum_errors += cvsx->vsx_heal_checksum_errors;
-	vsx->vsx_heal_read_errors += cvsx->vsx_heal_read_errors;
-	vsx->vsx_heal_write_errors += cvsx->vsx_heal_write_errors;
-	vsx->vsx_delay_errors += cvsx->vsx_delay_errors;
 }
 
 /*
@@ -2974,9 +2971,6 @@ vdev_get_stats_ex_impl(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 		if (vs) {
 			memset(vs->vs_ops, 0, sizeof (vs->vs_ops));
 			memset(vs->vs_bytes, 0, sizeof (vs->vs_bytes));
-			vs->vs_read_errors = 0;
-			vs->vs_write_errors = 0;
-			vs->vs_checksum_errors = 0;
 		}
 		if (vsx)
 			memset(vsx, 0, sizeof (*vsx));
@@ -2993,6 +2987,7 @@ vdev_get_stats_ex_impl(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 				vdev_get_child_stat_ex(cvd, vsx, cvsx);
 
 		}
+
 	} else {
 		/*
 		 * We're a leaf.  Just copy our ZIO active queue stats in.  The
@@ -3009,6 +3004,34 @@ vdev_get_stats_ex_impl(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 			vsx->vsx_pend_queue[t] = avl_numnodes(
 			    &vd->vdev_queue.vq_class[t].vqc_queued_tree);
 		}
+	}
+
+	/* 
+	 * If we're a root vdev, aggregate up all our top-level and
+	 * leaf vdev error counts.
+	 */
+	if (vdev_is_root(vd)) {
+		zfs_dbgmsg("%s: %llu root totaling up\n", __func__, vd->vdev_guid);
+		vdev_t *child_vd = NULL;
+		while ((child_vd = vdev_get_next_child(vd, child_vd))) {
+			zfs_dbgmsg("%s: adding child %llu %s\n", __func__, child_vd->vdev_guid, child_vd->vdev_path);
+			if (vs != NULL) {
+				vs->vs_checksum_errors +=
+				    child_vd->vdev_stat.vs_checksum_errors;
+				vs->vs_read_errors +=
+				    child_vd->vdev_stat.vs_read_errors;
+				vs->vs_write_errors +=
+				    child_vd->vdev_stat.vs_write_errors;
+				zfs_dbgmsg("%s: %llu now %llu %llu %llu\n", __func__, vd->vdev_guid, vs->vs_checksum_errors, vs->vs_read_errors, vs->vs_write_errors);
+			}
+			if (vsx != NULL) {
+				vsx->vsx_delays +=
+				    child_vd->vdev_stat_ex.vsx_delays;
+				vsx->vsx_heals +=
+				    child_vd->vdev_stat_ex.vsx_heals;
+			}
+		}
+		zfs_dbgmsg("%s: done\n", __func__);
 	}
 }
 
@@ -3091,20 +3114,18 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 	zio_type_t type = zio->io_type;
 	int flags = zio->io_flags;
 
-	if (vd->vdev_ops->vdev_op_leaf)
-		zfs_dbgmsg("%s: %p begin leaf\n", __func__, zio);
-
 	/*
 	 * If this i/o is a gang leader, it didn't do any actual work.
 	 */
 	if (zio->io_gang_tree)
 		return;
 
+	char *tmp;
+	tmp = zio_flags_to_str(zio);
+	zfs_dbgmsg("%s: begin %s\n", __func__, tmp);
+	kmem_free(tmp, strlen(tmp) + 1);
+
 	if (zio->io_error == 0) {
-		if (vd->vdev_ops->vdev_op_leaf)
-			zfs_dbgmsg("%s: %p no io err\n", __func__, zio);
-
-
 		/*
 		 * If this is a root i/o, don't count it -- we've already
 		 * counted the top-level vdevs, and vdev_get_stats() will
@@ -3130,7 +3151,6 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		mutex_enter(&vd->vdev_stat_lock);
 
 		if (flags & ZIO_FLAG_IO_REPAIR) {
-
 			if (flags & ZIO_FLAG_SCAN_THREAD) {
 				dsl_scan_phys_t *scn_phys =
 				    &spa->spa_dsl_pool->dp_scan->scn_phys;
@@ -3142,8 +3162,11 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 				vs->vs_scan_processed += psize;
 			}
 
-			if (flags & ZIO_FLAG_SELF_HEAL)
+
+			if (flags & ZIO_FLAG_SELF_HEAL) {
 				vs->vs_self_healed += psize;
+				vsx->vsx_heals++;
+			}
 		}
 
 		/*
@@ -3178,43 +3201,41 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		return;
 	}
 
+//	if (flags & ZIO_FLAG_SPECULATIVE)
+//		return;
+
+	/*
+	 * If this is an I/O error that is going to be retried, then ignore the
+	 * error.  Otherwise, the user may interpret B_FAILFAST I/O errors as
+	 * hard errors, when in reality they can happen for any number of
+	 * innocuous reasons (bus resets, MPxIO link failure, etc).
+	 */
+#if 0
+	if (zio->io_error == EIO &&
+	    !(zio->io_flags & ZIO_FLAG_IO_RETRY))
+		return;
+#endif
+
 	/*
 	 * Intent logs writes won't propagate their error to the root
 	 * I/O so don't mark these types of failures as pool-level
 	 * errors.
 	 */
-	if (zio->io_vd == NULL && (zio->io_flags & ZIO_FLAG_DONT_PROPAGATE)) {
-		if (vd->vdev_ops->vdev_op_leaf)
-			zfs_dbgmsg("%s: %p dont propogate\n", __func__, zio);
+	if (zio->io_vd == NULL && (zio->io_flags & ZIO_FLAG_DONT_PROPAGATE))
 		return;
-	}
 
-	/*
-	 * Update the stats for leaf vdevs.  We'll aggregate them up
-	 * to the top level vdevs and pool stats in vdev_stats_update
-	 */
-	if (vd->vdev_ops->vdev_op_leaf && !vdev_is_dead(vd)) {
-		mutex_enter(&vd->vdev_stat_lock);
-		if (type == ZIO_TYPE_READ) {
-			if (zio->io_error == ECKSUM)  {
-				if (zio_is_countable_checksum_error_leaf(zio)) {
-					zfs_dbgmsg("%s: %p incrementing in vdev_stats\n", __func__, zio);
-					vs->vs_checksum_errors++;
-				} else
-					zfs_dbgmsg("%s: %p not a real checksum\n", __func__, zio);
-			} else
-				vs->vs_read_errors++;
-		}
-		if (type == ZIO_TYPE_WRITE) {
-			char *tmp;
-			vs->vs_write_errors++;
-			tmp = zio_flags_to_str(zio); //vdev
-			zfs_dbgmsg("%s: %p %s realerror write %llu, %d, guid %llu (child %d) %s\n", __func__, zio, vd->vdev_path, vs->vs_write_errors, zio->io_error, vd->vdev_guid, vd->vdev_children, tmp);
-			kmem_free(tmp,0);
-		}
-
-		mutex_exit(&vd->vdev_stat_lock);
+	mutex_enter(&vd->vdev_stat_lock);
+	if (type == ZIO_TYPE_READ && !vdev_is_dead(vd)) {
+		if (zio->io_error == ECKSUM) {
+			if (zio->io_vd != NULL &&
+			    zio_is_countable_checksum_error(zio))
+				vs->vs_checksum_errors++;
+		} else
+			vs->vs_read_errors++;
 	}
+	if (type == ZIO_TYPE_WRITE && !vdev_is_dead(vd))
+		vs->vs_write_errors++;
+	mutex_exit(&vd->vdev_stat_lock);
 
 	if (type == ZIO_TYPE_WRITE && txg != 0 &&
 	    (!(flags & ZIO_FLAG_IO_REPAIR) ||
@@ -3799,48 +3820,83 @@ vdev_deadman(vdev_t *vd)
 	}
 }
 
+
+
 /*
- * Utility function to return the next vdev leaf.  Useful for iterating over
- * all leaf vdevs under a root vdev:
+ * Utility function to return the next child vdev.  It's basically a depth
+ * first search traversal of the vdevs.  Useful for iterating over all the
+ * vdevs under a root vdev.  Example:
  *
- *	 vdev_t leaf_vd = NULL;
- *	 while ((leaf_vd = vdev_get_next_leaf(root_vd, leaf_vd)))
- * 		zfs_dbgmsg("Leaf is %s\n", leaf_vd->vdev_path);
+ *	 vdev_t *child_vd = NULL;
+ *	 while ((child_vd = vdev_get_next_child(root_vd, child_vd)))
+ * 		zfs_dbgmsg("Child GUID is %llu\n", child_vd->vdev_guid);
  *
- * Returns next leaf vdev found, or NULL if there are no more leaf vdevs.
+ * rvd:		Starting vdev (usually root or a top-level vdev)
+ * prev_vd:	Return the next vdev after this vdev (prev_vd) in the vdev
+ * 		tree.  Set to NULL to return the next vdev.
+ *
+ * Returns next child vdev found, or NULL if there are no more child vdevs.
  */
 vdev_t *
-vdev_get_next_leaf(vdev_t *rvd, vdev_t *prev_vd)
+vdev_get_next_child(vdev_t *rvd, vdev_t *prev_vd)
 {
 	boolean_t seen_prev = B_FALSE;
+	zfs_dbgmsg("%s: root begin %llu %s, prev %llu %s\n", __func__,
+			rvd->vdev_guid, rvd->vdev_path, prev_vd ? prev_vd->vdev_guid : 0, prev_vd ? prev_vd->vdev_path : NULL);
 
-	/* This is our first run though, return the first leaf we find */
+	/* This is our first run though, return the first child we find */
 	if (prev_vd == NULL)
 		seen_prev = B_TRUE;
 
 	/* Iterate though our root vdev's children */
 	for (int i = 0; i < rvd->vdev_children; i++) {
 		vdev_t *tmpvd = rvd->vdev_child[i];
+		vdev_t *tmpvd2;
 
-		/* Are we a leaf? */
-		if (tmpvd->vdev_ops->vdev_op_leaf) {
-			if (seen_prev) {
-				/* Found it, we're done */
-				return (tmpvd);
-			}
-		} else {
-			/*
-			 * We're a top level vdev, look though all our children
-			 * for a leaf.
-			 */
-			tmpvd = vdev_get_next_leaf(tmpvd, prev_vd);
-			if (tmpvd != NULL)
-				return (tmpvd);
+		zfs_dbgmsg("%s: root looking at child %llu %s\n", __func__,
+			tmpvd->vdev_guid, tmpvd->vdev_path);
+
+		if (seen_prev) {
+			/* Found it, we're done */
+			return (tmpvd);
 		}
 
-		if (prev_vd == tmpvd)
+		if (prev_vd == tmpvd) {
+			zfs_dbgmsg("%s: seen %llu\n", __func__, tmpvd->vdev_guid);
 			seen_prev = B_TRUE;
+		}
+
+		/* If we've seen prev_vd, then just return the next child */
+		tmpvd2 = vdev_get_next_child(tmpvd, seen_prev ? NULL : prev_vd);
+		if (tmpvd2 != NULL)
+			return (tmpvd2);
 	}
+	return (NULL);
+}
+
+/*
+ * Utility function to return the next leaf vdev.  It works the same as
+ * vdev_get_next_child() except it only returns leaf vdevs.  It's useful for
+ * iterating over all leaf vdevs under a root vdev:
+ *
+ *	 vdev_t *leaf_vd = NULL;
+ *	 while ((leaf_vd = vdev_get_next_leaf(root_vd, leaf_vd)))
+ * 		zfs_dbgmsg("Leaf GUID is %llu\n", leaf_vd->vdev_guid);
+ *
+ * rvd:		Starting vdev (usually root or a top-level vdev)
+ * prev_vd:	Return the next leaf vdev after this vdev (prev_vd) in the vdev
+ * 		tree.  Set to NULL to return the next leaf vdev.
+ *
+ * Returns next leaf vdev found, or NULL if there are no more leaf vdevs.
+ */
+vdev_t *
+vdev_get_next_leaf(vdev_t *rvd, vdev_t *prev_vd) {
+	vdev_t *child_vd = prev_vd;
+
+	while ((child_vd = vdev_get_next_child(rvd, child_vd)))
+		if (child_vd->vdev_ops->vdev_op_leaf)
+			return (child_vd);
+
 	return (NULL);
 }
 

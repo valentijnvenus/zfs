@@ -3320,6 +3320,19 @@ zio_free_zil(spa_t *spa, uint64_t txg, blkptr_t *bp)
 }
 
 /*
++ * Return true if a particular zio should be subject to write error
++ * injecting.
++ */
+static boolean_t
+zio_is_write_error_injecting(zio_t *zio)
+{
+	return (zio->io_vd->vdev_ops->vdev_op_leaf &&
+	    zio->io_type == ZIO_TYPE_WRITE &&
+	    zio_injection_enabled &&
+	    zio_handle_device_injections(zio->io_vd, zio, EIO, EIO) == EIO);
+}
+
+/*
  * ==========================================================================
  * Read and write to physical devices
  * ==========================================================================
@@ -3442,6 +3455,20 @@ zio_vdev_io_start(zio_t *zio)
 		if (zio->io_type == ZIO_TYPE_READ && vdev_cache_read(zio))
 			return (ZIO_PIPELINE_CONTINUE);
 
+		/* 
+		 * HACK: If we're zinjecting write errors, we want to cancel
+		 * the write so that it doesn't go to disk.  To do that, we add
+		 * the zio to the active list, then continue the pipeline.  We
+		 * then fall into zio_vdev_io_done(), which removes our newley
+		 * added (and canceled) zio, and everything finishes up as normal.
+		 */
+		if (!(zio->io_flags && ZIO_FLAG_DELEGATED) && zio_is_write_error_injecting(zio)) {
+			zio_vdev_io_bypass(zio);
+			zio->io_error = EIO;
+			zfs_dbgmsg("%s: %p set to bypass, %s\n", __func__, zio, zio->io_flags & ZIO_FLAG_DELEGATED ? "delegated" : "single");
+			return (ZIO_PIPELINE_CONTINUE);
+		}
+
 		if ((zio = vdev_queue_io(zio)) == NULL)
 			return (ZIO_PIPELINE_STOP);
 
@@ -3473,6 +3500,8 @@ zio_vdev_io_done(zio_t *zio)
 		zio->io_delay = gethrtime() - zio->io_delay;
 
 	if (vd != NULL && vd->vdev_ops->vdev_op_leaf) {
+		zfs_dbgmsg("%s: %p dequeing bypass\n", __func__, zio);
+
 
 		vdev_queue_io_done(zio);
 
@@ -3482,9 +3511,6 @@ zio_vdev_io_done(zio_t *zio)
 		if (zio_injection_enabled && zio->io_error == 0)
 			zio->io_error = zio_handle_device_injections(vd, zio,
 			    EIO, EILSEQ);
-
-		if (zio_injection_enabled && zio->io_error == 0)
-			zio->io_error = zio_handle_label_injection(zio, EIO);
 
 		if (zio->io_error) {
 			if (!vdev_accessible(vd, zio)) {
@@ -3552,6 +3578,9 @@ zio_vdev_io_assess(zio_t *zio)
 	if (zio_injection_enabled && zio->io_error == 0)
 		zio->io_error = zio_handle_fault_injection(zio, EIO);
 
+	if (vd && vd->vdev_ops->vdev_op_leaf)
+		zfs_dbgmsg("%s: bypass %p\n", __func__, zio);
+
 	/*
 	 * If the I/O failed, determine whether we should attempt to retry it.
 	 *
@@ -3566,6 +3595,10 @@ zio_vdev_io_assess(zio_t *zio)
 		zio->io_flags |= ZIO_FLAG_IO_RETRY |
 		    ZIO_FLAG_DONT_CACHE | ZIO_FLAG_DONT_AGGREGATE;
 		zio->io_stage = ZIO_STAGE_VDEV_IO_START >> 1;
+
+		if (vd && vd->vdev_ops->vdev_op_leaf)
+			zfs_dbgmsg("%s: bypass reissue %p\n", __func__, zio);
+
 		zio_taskq_dispatch(zio, ZIO_TASKQ_ISSUE,
 		    zio_requeue_io_start_cut_in_line);
 		return (ZIO_PIPELINE_STOP);
@@ -3603,6 +3636,10 @@ zio_vdev_io_assess(zio_t *zio)
 
 	if (vd != NULL && vd->vdev_ops->vdev_op_leaf &&
 	    zio->io_physdone != NULL) {
+
+		if (vd && vd->vdev_ops->vdev_op_leaf)
+			zfs_dbgmsg("%s: bypass io_physdone %p\n", __func__, zio);
+
 		ASSERT(!(zio->io_flags & ZIO_FLAG_DELEGATED));
 		ASSERT(zio->io_child_type == ZIO_CHILD_VDEV);
 		zio->io_physdone(zio->io_logical);
@@ -3830,7 +3867,7 @@ zio_is_countable_checksum_error(zio_t *zio)
 	char *flags;
 
 	flags = zio_flags_to_str(zio); //zio
-	if (zio->io_error == ECKSUM && !vdev_is_dead(vd) &&
+	if (zio->io_error == ECKSUM && vd && !vdev_is_dead(vd) &&
 	    zio->io_prop.zp_checksum != ZIO_CHECKSUM_LABEL &&
 //	    zio->io_bookmark.zb_object != ZB_ZIL_OBJECT &&
 	    zio->io_bookmark.zb_level != ZB_ZIL_LEVEL) {
@@ -3847,13 +3884,6 @@ zio_is_countable_checksum_error(zio_t *zio)
 	kmem_free(flags, strlen(flags) + 1);
 
 	return (B_FALSE);
-}
-
-boolean_t
-zio_is_countable_checksum_error_leaf(zio_t *zio)
-{
-	return (zio->io_vd->vdev_ops->vdev_op_leaf &&
-	    zio_is_countable_checksum_error(zio));
 }
 
 static int
@@ -3878,12 +3908,10 @@ zio_checksum_verify(zio_t *zio)
 
 	if ((error = zio_checksum_error(zio, &info)) != 0) {
 		zio->io_error = error;
-		if (error == ECKSUM && zio_is_countable_checksum_error_leaf(zio)) {
-			zfs_dbgmsg("%s: %p is countable for real\n", __func__, zio);
+		if (error == ECKSUM)
 			zfs_ereport_start_checksum(zio->io_spa,
 			    zio->io_vd, &zio->io_bookmark, zio,
 			    zio->io_offset, zio->io_size, NULL, &info);
-		}
 	}
 
 	return (ZIO_PIPELINE_CONTINUE);
@@ -4215,7 +4243,7 @@ zio_done(zio_t *zio)
 			if (zfs_ereport_post(FM_EREPORT_ZFS_DELAY, zio->io_spa,
 			    zio->io_vd, &zio->io_bookmark, zio, 0, 0) == 0) {
 				mutex_enter(&zio->io_vd->vdev_stat_lock);
-				zio->io_vd->vdev_stat_ex.vsx_delay_errors++;
+				zio->io_vd->vdev_stat_ex.vsx_delays++;
 				mutex_exit(&zio->io_vd->vdev_stat_lock);
 			}
 		}

@@ -77,6 +77,12 @@ int dsl_scan_delay_completion = B_FALSE; /* set to delay scan completion */
 /* max number of blocks to free in a single TXG */
 unsigned long zfs_free_max_blocks = 100000;
 
+/* 
+ * Used to disable auto resilvering on DTL errors.  This is only used by test
+ * scripts.
+ */
+int disable_auto_resilver = 0;
+
 #define	DSL_SCAN_IS_SCRUB_RESILVER(scn) \
 	((scn)->scn_phys.scn_func == POOL_SCAN_SCRUB || \
 	(scn)->scn_phys.scn_func == POOL_SCAN_RESILVER)
@@ -1949,6 +1955,9 @@ dsl_scan_need_resilver(spa_t *spa, const dva_t *dva, size_t psize,
 {
 	vdev_t *vd;
 
+	if (disable_auto_resilver == 1)
+		return (B_FALSE);
+
 	if (DVA_GET_GANG(dva)) {
 		/*
 		 * Gang members may be spread across multiple
@@ -2141,4 +2150,8 @@ MODULE_PARM_DESC(zfs_free_max_blocks, "Max number of blocks freed in one txg");
 
 module_param(zfs_free_bpobj_enabled, int, 0644);
 MODULE_PARM_DESC(zfs_free_bpobj_enabled, "Enable processing of the free_bpobj");
+
+module_param(disable_auto_resilver, int, 0644);
+MODULE_PARM_DESC(disable_auto_resilver,
+	"Set to 1 to disable auto resilvering on DTL (used for test scripts)");
 #endif

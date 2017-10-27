@@ -134,6 +134,7 @@ extern int vdev_config_sync(vdev_t **svd, int svdcount, uint64_t txg);
 extern void vdev_state_dirty(vdev_t *vd);
 extern void vdev_state_clean(vdev_t *vd);
 
+extern vdev_t *vdev_get_next_child(vdev_t *rvd, vdev_t *prev_vd);
 extern vdev_t *vdev_get_next_leaf(vdev_t *rvd, vdev_t *prev_vd);
 
 typedef enum vdev_config_flag {
