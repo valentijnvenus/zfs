@@ -98,6 +98,18 @@
  */
 int zfs_ccw_retry_interval = 300;
 
+/*
+ * USED BY AUTOMATED TESTS ONLY!
+ *
+ * Any queued speculative IOs that were born 'zfs_spa_forced_spec_txgs_back'
+ * txgs back from the current open txg (or sooner) should be forced to
+ * complete in spa_sync().
+ *
+ * This should never be set more than 2, since we only backlog two previous
+ * txgs.  Setting it higher than 2 can result in false checksum errors.
+ */
+int zfs_spa_forced_spec_txgs_back = 0;
+
 typedef enum zti_modes {
 	ZTI_MODE_FIXED,			/* value is # of threads (min 1) */
 	ZTI_MODE_BATCH,			/* cpu-intensive; value is ignored */
@@ -7284,6 +7296,9 @@ spa_sync(spa_t *spa, uint64_t txg)
 
 	VERIFY(spa_writeable(spa));
 
+	spa->spa_forced_spec += vdev_queue_finish_old_speculative_ios(spa,
+	    MAX(0, txg - zfs_spa_forced_spec_txgs_back));
+
 	/*
 	 * Wait for i/os issued in open context that need to complete
 	 * before this txg syncs.
@@ -7467,6 +7482,7 @@ spa_sync(spa_t *spa, uint64_t txg)
 		}
 
 	} while (dmu_objset_is_dirty(mos, txg));
+
 
 #ifdef ZFS_DEBUG
 	if (!list_is_empty(&spa->spa_config_dirty_list)) {
@@ -7876,5 +7892,8 @@ MODULE_PARM_DESC(zfs_max_missing_tvds,
 	"Allow importing pool with up to this number of missing top-level vdevs"
 	" (in read-only mode)");
 /* END CSTYLED */
+module_param(zfs_spa_forced_spec_txgs_back, int, 0644);
+MODULE_PARM_DESC(zfs_spa_forced_spec_txgs_back,
+	"Num of txgs back to force speculative IOs to finish");
 
 #endif

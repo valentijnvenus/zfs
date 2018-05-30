@@ -659,6 +659,12 @@ typedef struct zpool_rewind_policy {
 #define	ZPOOL_CONFIG_VDEV_ASYNC_AGG_W_HISTO	"vdev_async_agg_w_histo"
 #define	ZPOOL_CONFIG_VDEV_AGG_SCRUB_HISTO	"vdev_agg_scrub_histo"
 
+/* Self-heal IO stats */
+#define	ZPOOL_CONFIG_VDEV_HEALS			"vdev_heals"
+
+/* Number of IO delays */
+#define	ZPOOL_CONFIG_VDEV_DELAYS		"vdev_delays"
+
 /* vdev enclosure sysfs path */
 #define	ZPOOL_CONFIG_VDEV_ENC_SYSFS_PATH	"vdev_enc_sysfs_path"
 
@@ -1011,6 +1017,9 @@ typedef struct vdev_stat_ex {
 	/* Delegated (aggregated) physical IO histogram */
 	uint64_t vsx_agg_histo[ZIO_PRIORITY_NUM_QUEUEABLE]
 	    [VDEV_RQ_HISTO_BUCKETS];
+
+	uint64_t vsx_heals;
+	uint64_t vsx_delays;
 
 } vdev_stat_ex_t;
 

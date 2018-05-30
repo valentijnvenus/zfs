@@ -782,6 +782,14 @@ zio_create(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 
 	zio->io_spa = spa;
 	zio->io_txg = txg;
+
+	if (spa->spa_dsl_pool != NULL) {
+		/* Record open TXG at time of zio creation */
+		zio->io_creation_txg = spa->spa_dsl_pool->dp_tx.tx_open_txg;
+	} else {
+		zio->io_creation_txg = 0;
+	}
+
 	zio->io_done = done;
 	zio->io_private = private;
 	zio->io_type = type;
@@ -4021,6 +4029,30 @@ zio_checksum_generate(zio_t *zio)
 	return (ZIO_PIPELINE_CONTINUE);
 }
 
+/*
+ * Returns true if the zio should be counted in the checksum error stats.
+ *
+ * This includes all checksum-errored zios from:
+ *
+ * 1. leaf vdevs that are present
+ * 2. ...and not probing the label (which may not exist)
+ * 3. ...and are physical IOs.
+ */
+boolean_t
+zio_is_countable_checksum_error(zio_t *zio)
+{
+	vdev_t *vd = zio->io_vd;
+
+	if (zio->io_error == ECKSUM && vd && !vdev_is_dead(vd) &&
+	    zio->io_prop.zp_checksum != ZIO_CHECKSUM_LABEL &&
+//	    zio->io_bookmark.zb_object != ZB_ZIL_OBJECT &&
+	    zio->io_bookmark.zb_level != ZB_ZIL_LEVEL) {
+		return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
 static int
 zio_checksum_verify(zio_t *zio)
 {
@@ -4043,12 +4075,10 @@ zio_checksum_verify(zio_t *zio)
 
 	if ((error = zio_checksum_error(zio, &info)) != 0) {
 		zio->io_error = error;
-		if (error == ECKSUM &&
-		    !(zio->io_flags & ZIO_FLAG_SPECULATIVE)) {
+		if (error == ECKSUM)
 			zfs_ereport_start_checksum(zio->io_spa,
 			    zio->io_vd, &zio->io_bookmark, zio,
 			    zio->io_offset, zio->io_size, NULL, &info);
-		}
 	}
 
 	return (ZIO_PIPELINE_CONTINUE);
@@ -4334,7 +4364,12 @@ zio_done(zio_t *zio)
 
 	zio_pop_transforms(zio);	/* note: may set zio->io_error */
 
-	vdev_stat_update(zio, psize);
+	/*
+	 * Don't update stats for delegated IOs - their individual child IOs
+	 * should be the ones updating stats.
+	 */
+	if (!(zio->io_flags & ZIO_FLAG_DELEGATED))
+		vdev_stat_update(zio, psize);
 
 	/*
 	 * If this I/O is attached to a particular vdev is slow, exceeding
@@ -4342,9 +4377,37 @@ zio_done(zio_t *zio)
 	 * We ignore these errors if the device is currently unavailable.
 	 */
 	if (zio->io_delay >= MSEC2NSEC(zio_delay_max)) {
-		if (zio->io_vd != NULL && !vdev_is_dead(zio->io_vd))
-			zfs_ereport_post(FM_EREPORT_ZFS_DELAY, zio->io_spa,
-			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
+		if (zio->io_vd != NULL && !vdev_is_dead(zio->io_vd)) {
+
+#if 0
+			spa_t *spa = zio->io_vd->vdev_spa;
+
+			/*
+			 * Skip recording any delays during states where
+			 * delays are normal.  These were taken from
+			 * zfs_ereport_start().
+			 */
+			if (spa_load_state(spa) == SPA_LOAD_TRYIMPORT ||
+			    (spa_load_state(spa) == SPA_LOAD_RECOVER) ||
+			    (spa_load_state(spa) != SPA_LOAD_NONE &&
+			    spa->spa_last_open_failed)) {
+				mutex_enter(&zio->io_vd->vdev_stat_lock);
+				zio->io_vd->vdev_stat_ex.vsx_heal_delays++;
+				mutex_exit(&zio->io_vd->vdev_stat_lock);
+			}
+#endif
+			/*
+			 * zfs_ereport_post() has smarts built into it to
+			 * prevent it from reporting events for bogus cases
+			 * (like delays on removed drives).
+			 */
+			if (zfs_ereport_post(FM_EREPORT_ZFS_DELAY, zio->io_spa,
+			    zio->io_vd, &zio->io_bookmark, zio, 0, 0) == 0) {
+				mutex_enter(&zio->io_vd->vdev_stat_lock);
+				zio->io_vd->vdev_stat_ex.vsx_delays++;
+				mutex_exit(&zio->io_vd->vdev_stat_lock);
+			}
+		}
 	}
 
 	if (zio->io_error) {
@@ -4360,8 +4423,7 @@ zio_done(zio_t *zio)
 			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
 
 		if ((zio->io_error == EIO || !(zio->io_flags &
-		    (ZIO_FLAG_SPECULATIVE | ZIO_FLAG_DONT_PROPAGATE))) &&
-		    zio == zio->io_logical) {
+		    ZIO_FLAG_DONT_PROPAGATE)) && zio == zio->io_logical) {
 			/*
 			 * For logical I/O requests, tell the SPA to log the
 			 * error and generate a logical data ereport.
@@ -4551,6 +4613,7 @@ zio_done(zio_t *zio)
 		zio_destroy(zio);
 	}
 
+
 	return (ZIO_PIPELINE_STOP);
 }
 
@@ -4718,6 +4781,7 @@ EXPORT_SYMBOL(zio_buf_alloc);
 EXPORT_SYMBOL(zio_data_buf_alloc);
 EXPORT_SYMBOL(zio_buf_free);
 EXPORT_SYMBOL(zio_data_buf_free);
+EXPORT_SYMBOL(zio_is_countable_checksum_error);
 
 module_param(zio_delay_max, int, 0644);
 MODULE_PARM_DESC(zio_delay_max, "Max zio millisec delay before posting event");
