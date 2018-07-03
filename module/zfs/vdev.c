@@ -3386,6 +3386,8 @@ vdev_clear(spa_t *spa, vdev_t *vd)
 	vd->vdev_stat.vs_read_errors = 0;
 	vd->vdev_stat.vs_write_errors = 0;
 	vd->vdev_stat.vs_checksum_errors = 0;
+	vd->vdev_stat_ex.vsx_heals = 0;
+	vd->vdev_stat_ex.vsx_delays = 0;
 
 	for (int c = 0; c < vd->vdev_children; c++)
 		vdev_clear(spa, vd->vdev_child[c]);
@@ -3736,8 +3738,10 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 				vs->vs_scan_processed += psize;
 			}
 
-			if (flags & ZIO_FLAG_SELF_HEAL)
+			if (flags & ZIO_FLAG_SELF_HEAL) {
 				vs->vs_self_healed += psize;
+				vsx->vsx_heals++;
+			}
 		}
 
 		/*

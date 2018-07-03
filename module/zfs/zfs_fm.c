@@ -286,6 +286,7 @@ zfs_ereport_start(nvlist_t **ereport_out, nvlist_t **detector_out,
 		vdev_t *pvd = vd->vdev_parent;
 		vdev_queue_t *vq = &vd->vdev_queue;
 		vdev_stat_t *vs = &vd->vdev_stat;
+		vdev_stat_ex_t *vsx = &vd->vdev_stat_ex;
 		vdev_t *spare_vd;
 		uint64_t *spare_guids;
 		char **spare_paths;
@@ -333,6 +334,15 @@ zfs_ereport_start(nvlist_t **ereport_out, nvlist_t **detector_out,
 			    DATA_TYPE_UINT64, vs->vs_write_errors,
 			    FM_EREPORT_PAYLOAD_ZFS_VDEV_CKSUM_ERRORS,
 			    DATA_TYPE_UINT64, vs->vs_checksum_errors, NULL);
+		}
+
+		if (vsx != NULL) {
+			fm_payload_set(ereport,
+			    FM_EREPORT_PAYLOAD_ZFS_VDEV_HEALS,
+			    DATA_TYPE_UINT64, vsx->vsx_heals,
+			    FM_EREPORT_PAYLOAD_ZFS_VDEV_DELAYS,
+			    DATA_TYPE_UINT64, vsx->vsx_delays,
+			    NULL);
 		}
 
 		if (pvd != NULL) {
