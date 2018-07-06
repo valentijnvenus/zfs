@@ -3727,6 +3727,8 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 		mutex_enter(&vd->vdev_stat_lock);
 
 		if (flags & ZIO_FLAG_IO_REPAIR) {
+			zio_t *pio;
+
 			if (flags & ZIO_FLAG_SCAN_THREAD) {
 				dsl_scan_phys_t *scn_phys =
 				    &spa->spa_dsl_pool->dp_scan->scn_phys;
@@ -3738,7 +3740,10 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 				vs->vs_scan_processed += psize;
 			}
 
-			if (flags & ZIO_FLAG_SELF_HEAL) {
+			pio = zio_unique_parent(zio);
+			if (flags & ZIO_FLAG_SELF_HEAL &&
+			    !(pio->io_flags & ZIO_FLAG_SPECULATIVE)) {
+				// zio
 				vs->vs_self_healed += psize;
 				vsx->vsx_heals++;
 			}

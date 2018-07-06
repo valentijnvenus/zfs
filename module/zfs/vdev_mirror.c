@@ -701,6 +701,12 @@ vdev_mirror_io_done(zio_t *zio)
 				mc->mc_error = SET_ERROR(ESTALE);
 			}
 
+			if (zio->io_flags & ZIO_FLAG_SPECULATIVE) {
+				zfs_dbgmsg("healing speculative\n");
+			} else {
+				zfs_dbgmsg("not speculative\n");
+			}
+
 			zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
 			    mc->mc_vd, mc->mc_offset,
 			    zio->io_abd, zio->io_size,
