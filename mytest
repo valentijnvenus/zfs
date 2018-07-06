@@ -1,0 +1,46 @@
+#!/bin/bash
+ZPOOL=./cmd/zpool/zpool
+ZFS=./cmd/zfs/zfs
+ZINJECT=./cmd/zinject/zinject
+MOUNTDIR=/tmp/mount
+MKFILE=./tests/zfs-tests/cmd/mkfile/mkfile
+VDEV1=/tmp/file1
+VDEV2=/tmp/file2
+VDEV3=/tmp/file3
+POOL=mypool
+POOLTYPE=mirror
+FILESIZE=1048576
+
+truncate -s 1000M $VDEV1 $VDEV2 $VDEV3
+mkdir -p $MOUNTDIR
+$ZPOOL create -f -m $MOUNTDIR -o failmode=continue $POOL $POOLTYPE $VDEV1 $VDEV2 $VDEV3
+$ZPOOL events -c
+sudo bash -c 'echo 0 > /proc/spl/kstat/zfs/dbgmsg'
+$ZFS set compression=off $POOL
+$MKFILE $FILESIZE $MOUNTDIR/file
+
+$ZPOOL export $POOL
+$ZPOOL import -d /tmp $POOL
+
+sudo bash -c 'echo 0 > /proc/spl/kstat/zfs/mypool/reads'
+
+ERR=corrupt
+$ZINJECT -d $VDEV1 -e $ERR -T read -f 70 $POOL
+$ZINJECT -d $VDEV2 -e $ERR -T read -f 50 $POOL
+$ZINJECT -d $VDEV3 -e $ERR -T read -f 0 $POOL
+
+cat $MOUNTDIR/file > /dev/null || true
+
+$ZINJECT -c all
+$ZPOOL status
+$ZPOOL status -grd
+#cat /proc/spl/kstat/zfs/dbgmsg | grep -A 8 increa
+#cat /proc/spl/kstat/zfs/mypool/reads
+cat /proc/spl/kstat/zfs/dbgmsg
+
+sudo $ZPOOL events > events
+sudo $ZPOOL events -v > vevents
+
+
+$ZPOOL destroy $POOL
+
