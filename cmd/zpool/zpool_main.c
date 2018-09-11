@@ -70,6 +70,15 @@
 
 #include "statcommon.h"
 
+#define ANSI_RED_FG	"\033[0;31m"
+#define ANSI_RED_BG	"\033[0;41m"
+#define ANSI_YELLOW_FG	"\033[0;33m"
+#define ANSI_YELLOW_BG	"\033[0;43m"
+#define ANSI_GREEN_FG	"\033[0;32m"
+#define ANSI_BOLD_BLUE_FG	"\033[1;34m"
+#define ANSI_RESET	"\033[0m"
+#define ANSI_BOLD	"\033[1m"
+
 static int zpool_do_create(int, char **);
 static int zpool_do_destroy(int, char **);
 
@@ -1635,8 +1644,18 @@ typedef struct status_cbdata {
 	boolean_t	cb_first;
 	boolean_t	cb_dedup_stats;
 	boolean_t	cb_print_status;
+	boolean_t	cb_colors;
+	boolean_t	cb_blink;
 	vdev_cmd_data_list_t	*vcdl;
 } status_cbdata_t;
+
+
+void print_color(status_cbdata_t *cb, char *color)
+{
+	if (cb->cb_colors && color)
+		printf(color);
+}
+
 
 /* Return 1 if string is NULL, empty, or whitespace; return 0 otherwise. */
 static int
@@ -1721,6 +1740,7 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 	const char *state;
 	char *type;
 	char *path = NULL;
+	char *color = NULL;
 
 	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
 	    &child, &children) != 0)
@@ -1735,6 +1755,17 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 		return;
 
 	state = zpool_state_to_name(vs->vs_state, vs->vs_aux);
+	if (cb->cb_colors) {
+		if (strcmp(state,"FAULTED") == 0)
+			color = ANSI_RED_BG;
+		else if (strcmp(state, "OFFLINE") == 0 || strcmp(state, "DEGRADED") == 0)
+			color = ANSI_YELLOW_FG;
+		else
+			color = ANSI_GREEN_FG;
+	}
+	
+	print_color(cb, color);
+	
 	if (isspare) {
 		/*
 		 * For hot spares, we use the terms 'INUSE' and 'AVAILABLE' for
@@ -1748,12 +1779,37 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 
 	(void) printf("\t%*s%-*s  %-8s", depth, "", cb->cb_namewidth - depth,
 	    name, state);
+	print_color(cb, ANSI_RESET);
 
 	if (!isspare) {
 		zfs_nicenum(vs->vs_read_errors, rbuf, sizeof (rbuf));
 		zfs_nicenum(vs->vs_write_errors, wbuf, sizeof (wbuf));
 		zfs_nicenum(vs->vs_checksum_errors, cbuf, sizeof (cbuf));
-		(void) printf(" %5s %5s %5s", rbuf, wbuf, cbuf);
+		printf(" ");
+		if (vs->vs_read_errors)
+			print_color(cb, ANSI_RED_BG);
+		else
+			print_color(cb, ANSI_GREEN_FG);
+
+		printf("%5s", rbuf);
+		print_color(cb, ANSI_RESET);
+
+		printf(" ");
+		if (vs->vs_write_errors)
+			print_color(cb, ANSI_RED_BG);
+		else
+			print_color(cb, ANSI_GREEN_FG);
+		printf("%5s", wbuf);
+		print_color(cb, ANSI_RESET);
+
+		printf(" ");
+		if (vs->vs_checksum_errors)
+			print_color(cb, ANSI_RED_BG);
+		else
+			print_color(cb, ANSI_GREEN_FG);
+
+		printf("%5s", cbuf);
+		print_color(cb, ANSI_RESET);
 	}
 
 	if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_NOT_PRESENT,
@@ -1762,7 +1818,7 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 		(void) printf("  was %s", path);
 	} else if (vs->vs_aux != 0) {
 		(void) printf("  ");
-
+		print_color(cb, ANSI_RED_BG);
 		switch (vs->vs_aux) {
 		case VDEV_AUX_OPEN_FAILED:
 			(void) printf(gettext("cannot open"));
@@ -1834,6 +1890,7 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 			(void) printf(gettext("corrupted data"));
 			break;
 		}
+		print_color(cb, ANSI_RESET);
 	}
 
 	(void) nvlist_lookup_uint64_array(nv, ZPOOL_CONFIG_SCAN_STATS,
@@ -6647,6 +6704,7 @@ status_callback(zpool_handle_t *zhp, void *data)
 	const char *health;
 	uint_t c;
 	vdev_stat_t *vs;
+	char *color = NULL;
 
 	config = zpool_get_config(zhp, NULL);
 	reason = zpool_get_status(zhp, &msgid, &errata);
@@ -6681,9 +6739,33 @@ status_callback(zpool_handle_t *zhp, void *data)
 
 	health = zpool_get_state_str(zhp);
 
-	(void) printf(gettext("  pool: %s\n"), zpool_get_name(zhp));
-	(void) printf(gettext(" state: %s\n"), health);
+	printf("  ");
+	print_color(cbp, ANSI_BOLD);
+	printf(gettext("pool: "));
+	print_color(cbp, ANSI_RESET);
+	print_color(cbp, ANSI_BOLD_BLUE_FG);
+	printf("%s\n", zpool_get_name(zhp));
+	print_color(cbp, ANSI_RESET);
+	printf(" ");
+	print_color(cbp, ANSI_BOLD);
+	printf(gettext("state: "));
+	print_color(cbp, ANSI_RESET);
 
+	if (strcmp(health,"FAULTED") == 0)
+		color = ANSI_RED_BG;
+	else if (strcmp(health, "OFFLINE") == 0 || strcmp(health, "DEGRADED") == 0)
+		color = ANSI_YELLOW_FG;
+	else
+		color = ANSI_GREEN_FG;
+	
+	print_color(cbp, color);
+
+	printf("%s", health);
+
+	print_color(cbp, ANSI_RESET);
+	printf("\n");
+
+	print_color(cbp, ANSI_YELLOW_FG);
 	switch (reason) {
 	case ZPOOL_STATUS_MISSING_DEV_R:
 		(void) printf(gettext("status: One or more devices could not "
@@ -6926,6 +7008,7 @@ status_callback(zpool_handle_t *zhp, void *data)
 		 */
 		assert(reason == ZPOOL_STATUS_OK);
 	}
+	print_color(cbp, ANSI_RESET);
 
 	if (msgid != NULL)
 		(void) printf(gettext("   see: http://zfsonlinux.org/msg/%s\n"),
@@ -6945,8 +7028,9 @@ status_callback(zpool_handle_t *zhp, void *data)
 		    ZPOOL_CONFIG_SCAN_STATS, (uint64_t **)&ps, &c);
 		(void) nvlist_lookup_uint64_array(nvroot,
 		    ZPOOL_CONFIG_REMOVAL_STATS, (uint64_t **)&prs, &c);
-
+		print_color(cbp, ANSI_GREEN_FG);
 		print_scan_status(ps);
+		print_color(cbp, ANSI_RESET);
 		print_checkpoint_scan_warning(ps, pcs);
 		print_removal_status(zhp, prs);
 		print_checkpoint_status(pcs);
@@ -6956,10 +7040,12 @@ status_callback(zpool_handle_t *zhp, void *data)
 		if (cbp->cb_namewidth < 10)
 			cbp->cb_namewidth = 10;
 
+		print_color(cbp, ANSI_BOLD);
 		(void) printf(gettext("config:\n\n"));
 		(void) printf(gettext("\t%-*s  %-8s %5s %5s %5s"),
 		    cbp->cb_namewidth, "NAME", "STATE", "READ", "WRITE",
 		    "CKSUM");
+		print_color(cbp, ANSI_RESET);
 
 		if (cbp->vcdl != NULL)
 			print_cmd_columns(cbp->vcdl, 0);
@@ -7027,6 +7113,7 @@ status_callback(zpool_handle_t *zhp, void *data)
  * zpool status [-c [script1,script2,...]] [-gLPvx] [-T d|u] [pool] ...
  *              [interval [count]]
  *
+ * 	-a	ANSI colors
  *	-c CMD	For each vdev, run command CMD
  *	-g	Display guid for individual vdev name.
  *	-L	Follow links when resolving vdev path name.
@@ -7049,8 +7136,14 @@ zpool_do_status(int argc, char **argv)
 	char *cmd = NULL;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "c:gLPvxDT:")) != -1) {
+	while ((c = getopt(argc, argv, "aAc:gLPvxDT:")) != -1) {
 		switch (c) {
+		case 'a':
+			cb.cb_colors = 1;
+			break;
+		case 'A':
+			cb.cb_blink = 1;
+			break;
 		case 'c':
 			if (cmd != NULL) {
 				fprintf(stderr,
