@@ -1645,7 +1645,7 @@ typedef struct status_cbdata {
 	boolean_t	cb_dedup_stats;
 	boolean_t	cb_print_status;
 	boolean_t	cb_colors;
-	boolean_t	cb_blink;
+	boolean_t	cb_emoji;
 	vdev_cmd_data_list_t	*vcdl;
 } status_cbdata_t;
 
@@ -1755,16 +1755,13 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 		return;
 
 	state = zpool_state_to_name(vs->vs_state, vs->vs_aux);
-	if (cb->cb_colors) {
-		if (strcmp(state,"FAULTED") == 0)
-			color = ANSI_RED_BG;
-		else if (strcmp(state, "OFFLINE") == 0 || strcmp(state, "DEGRADED") == 0)
-			color = ANSI_YELLOW_FG;
-		else
-			color = ANSI_GREEN_FG;
-	}
+	if (strcmp(state,"FAULTED") == 0)
+		color = ANSI_RED_BG;
+	else if (strcmp(state, "OFFLINE") == 0 || strcmp(state, "DEGRADED") == 0)
+		color = ANSI_YELLOW_FG;
+	else
+		color = ANSI_GREEN_FG;
 	
-	print_color(cb, color);
 	
 	if (isspare) {
 		/*
@@ -1777,9 +1774,23 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 			state = "AVAIL";
 	}
 
-	(void) printf("\t%*s%-*s  %-8s", depth, "", cb->cb_namewidth - depth,
-	    name, state);
+	if (cb->cb_emoji) { 
+		if ((strcmp(state, "OFFLINE") == 0 || strcmp(state, "DEGRADED") == 0)) {
+			printf("🔥");
+		} else if (strcmp(state, "FAULTED") == 0) {
+			printf("☠️");
+		} else if (vs->vs_read_errors || vs->vs_write_errors || vs->vs_checksum_errors) {
+			printf("😟");
+		}
+	} else {
+		printf(" ");
+	}
+	print_color(cb, color);
+		(void) printf("\t%*s%-*s  %-8s ", depth, "",  cb->cb_namewidth - depth,
+		    name, state);
+
 	print_color(cb, ANSI_RESET);
+
 
 	if (!isspare) {
 		zfs_nicenum(vs->vs_read_errors, rbuf, sizeof (rbuf));
@@ -6760,7 +6771,9 @@ status_callback(zpool_handle_t *zhp, void *data)
 	
 	print_color(cbp, color);
 
-	printf("%s", health);
+	printf("%s ", health);
+	if (cbp->cb_emoji && strcmp(health, "DEGRADED") == 0)
+		printf("🔥");
 
 	print_color(cbp, ANSI_RESET);
 	printf("\n");
@@ -7136,13 +7149,13 @@ zpool_do_status(int argc, char **argv)
 	char *cmd = NULL;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "aAc:gLPvxDT:")) != -1) {
+	while ((c = getopt(argc, argv, "aec:gLPvxDT:")) != -1) {
 		switch (c) {
 		case 'a':
 			cb.cb_colors = 1;
 			break;
-		case 'A':
-			cb.cb_blink = 1;
+		case 'e':
+			cb.cb_emoji = 1;
 			break;
 		case 'c':
 			if (cmd != NULL) {
