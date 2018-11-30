@@ -57,7 +57,30 @@ fi
 %defattr(-,root,root)
 /usr/src/%{module}-%{version}
 
-%post
+# Why the build is done in %posttrans?
+#
+# In previous versions of ZFS, the dkms build was done in %post. This lead
+# to a situation where our modules would get deleted when we did an OS upgrade.
+# Consider the following case of where we upgrade the ZFS version X modules
+# from Fedora 28 to Fedora 29:
+#
+# %pretrans X.fc29
+# %pre X.fc29
+# %post X.fc29
+#   - This is the step where fc29 gets built by dkms.
+#     As part of the build, dkms automatically removes the previous
+#     modules before building the new ones.  It then builds the new
+#     modules.
+# %preun X.fc28
+#   - At this point, X.fc29 is be built and installed, but since it has the
+#     same X, its files get inadvertently removed by fc28's uninstall.
+# %postun X.fc28
+# %posttrans X.fc29
+#
+# By moving the build to %posttrans we avoid the previous module's uninstall
+# removing our modules.  It's slightly an abuse of %posttrans, but it does give
+# us the behavior we want.
+%posttrans
 for POSTINST in /usr/lib/dkms/common.postinst; do
     if [ -f $POSTINST ]; then
         $POSTINST %{module} %{version}
