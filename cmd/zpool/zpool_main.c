@@ -7253,15 +7253,59 @@ print_error_log(zpool_handle_t *zhp)
 	elem = NULL;
 	while ((elem = nvlist_next_nvpair(nverrlist, elem)) != NULL) {
 		nvlist_t *nv;
-		uint64_t dsobj, obj;
+		uint64_t dsobj, obj, data_block_size, indirect_block_size;
+		uint64_t *block_ids;
+		int64_t *indrt_levels;
+		unsigned int error_count;
 
 		verify(nvpair_value_nvlist(elem, &nv) == 0);
 		verify(nvlist_lookup_uint64(nv, ZPOOL_ERR_DATASET,
 		    &dsobj) == 0);
 		verify(nvlist_lookup_uint64(nv, ZPOOL_ERR_OBJECT,
 		    &obj) == 0);
+		verify(nvlist_lookup_int64_array(nv, ZPOOL_ERR_LEVEL,
+		    &indrt_levels, &error_count) == 0);
+		verify(nvlist_lookup_uint64_array(nv, ZPOOL_ERR_BLOCKID,
+		    &block_ids, &error_count) == 0);
+
 		zpool_obj_to_path(zhp, dsobj, obj, pathname, len);
-		(void) printf("%7s %s\n", "", pathname);
+
+		if (error_count > 0 && zpool_get_block_size(zhp, obj,
+		    &data_block_size, &indirect_block_size) == 0) {
+			uint64_t blkptrs_in_ind =
+			    indirect_block_size / sizeof (blkptr_t);
+			uint64_t min_offset_blks =
+			    pow(blkptrs_in_ind, indrt_levels[0]) * block_ids[0];
+			uint64_t max_offset_blks =
+			    pow(blkptrs_in_ind, indrt_levels[0]) * block_ids[0];
+			/*
+			 * Iterate through the error blockids and find minimum
+			 * and maximax offset.
+			 */
+			for (int i = 1; i < error_count; i++) {
+				uint64_t offset_blks =
+				    pow(blkptrs_in_ind,
+				    indrt_levels[i]) * block_ids[i];
+				min_offset_blks =
+				    MIN(min_offset_blks, offset_blks);
+				max_offset_blks =
+				    MAX(max_offset_blks, offset_blks);
+			}
+			uint64_t min_offset_byte =
+			    data_block_size * min_offset_blks;
+			uint64_t max_offset_byte =
+			    data_block_size * max_offset_blks;
+			uint64_t data_block_size_kb = data_block_size / 1024;
+			(void) printf("%7s %s %u corrupted %lluKB sized blocks "
+			    "found between %#llx and %#llx byte relative to "
+			    "file beginning\n ", "", pathname, error_count,
+			    (u_longlong_t)data_block_size_kb,
+			    (u_longlong_t)min_offset_byte,
+			    (u_longlong_t)max_offset_byte);
+		} else {
+			(void) printf("%7s %s %s\n", "", pathname, " can not "
+			    "determine error offset");
+		}
 	}
 	free(pathname);
 	nvlist_free(nverrlist);

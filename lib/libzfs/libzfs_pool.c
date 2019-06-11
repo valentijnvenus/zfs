@@ -4162,13 +4162,63 @@ zpool_get_errlog(zpool_handle_t *zhp, nvlist_t **nverrlistp)
 	/*
 	 * Fill in the nverrlistp with nvlist's of dataset and object numbers.
 	 */
+	nvlist_t *nv;
+	uint64_t *block_ids = NULL;
+	int64_t *indrt_levels = NULL;
+	unsigned int error_count = 0;
 	for (i = 0; i < count; i++) {
-		nvlist_t *nv;
 
 		/* ignoring zb_blkid and zb_level for now */
-		if (i > 0 && zb[i-1].zb_objset == zb[i].zb_objset &&
-		    zb[i-1].zb_object == zb[i].zb_object)
+		if (i > 0 && zb[i - 1].zb_objset == zb[i].zb_objset &&
+		    zb[i - 1].zb_object == zb[i].zb_object) {
+			block_ids[error_count] = zb[i].zb_blkid;
+			indrt_levels[error_count] = zb[i].zb_level;
+			error_count++;
+			if (i == count - 1) {
+				if (nvlist_add_uint64_array(nv,
+				    ZPOOL_ERR_BLOCKID, block_ids,
+				    error_count) != 0) {
+					nvlist_free(nv);
+					goto nomem;
+				}
+				if (nvlist_add_int64_array(nv, ZPOOL_ERR_LEVEL,
+				    indrt_levels, error_count) != 0) {
+					nvlist_free(nv);
+					goto nomem;
+				}
+				free(indrt_levels);
+				free(block_ids);
+				if (nvlist_add_nvlist(*nverrlistp, "ejk", nv) !=
+				    0) {
+					nvlist_free(nv);
+					goto nomem;
+				}
+				nvlist_free(nv);
+				error_count = 0;
+			}
 			continue;
+		}
+
+		if (i > 0) {
+			if (nvlist_add_uint64_array(nv, ZPOOL_ERR_BLOCKID,
+			    block_ids, error_count) != 0) {
+				nvlist_free(nv);
+				goto nomem;
+			}
+			free(indrt_levels);
+			if (nvlist_add_int64_array(nv, ZPOOL_ERR_LEVEL,
+			    indrt_levels, error_count) != 0) {
+				nvlist_free(nv);
+				goto nomem;
+			}
+			free(block_ids);
+			if (nvlist_add_nvlist(*nverrlistp, "ejk", nv) != 0) {
+				nvlist_free(nv);
+				goto nomem;
+			}
+			nvlist_free(nv);
+			error_count = 0;
+		}
 
 		if (nvlist_alloc(&nv, NV_UNIQUE_NAME, KM_SLEEP) != 0)
 			goto nomem;
@@ -4182,11 +4232,12 @@ zpool_get_errlog(zpool_handle_t *zhp, nvlist_t **nverrlistp)
 			nvlist_free(nv);
 			goto nomem;
 		}
-		if (nvlist_add_nvlist(*nverrlistp, "ejk", nv) != 0) {
-			nvlist_free(nv);
-			goto nomem;
-		}
-		nvlist_free(nv);
+
+		block_ids = malloc(count * sizeof (uint64_t));
+		indrt_levels = malloc(count * sizeof (int64_t));
+		block_ids[error_count] = zb[i].zb_blkid;
+		indrt_levels[error_count] = zb[i].zb_level;
+		error_count = 1;
 	}
 
 	free((void *)(uintptr_t)zc.zc_nvlist_dst);
@@ -4527,6 +4578,24 @@ zpool_obj_to_path(zpool_handle_t *zhp, uint64_t dsobj, uint64_t obj,
 		    (longlong_t)obj);
 	}
 	free(mntpnt);
+}
+
+/*
+ * Given an dataset object number, return data block and indirect block size.
+ */
+int
+zpool_get_block_size(zpool_handle_t *zhp, uint64_t obj,
+    uint64_t *data_blk_size, uint64_t *indrt_blk_size)
+{
+	zfs_cmd_t zc = {"\0"};
+	(void) strlcpy(zc.zc_name, zhp->zpool_name, sizeof (zc.zc_name));
+	zc.zc_obj = obj;
+	int error = ioctl(zhp->zpool_hdl->libzfs_fd, ZFS_IOC_OBJ_TO_STATS, &zc);
+	if (error == 0) {
+		*data_blk_size = zc.zc_stat.zs_data_block_size;
+		*indrt_blk_size = zc.zc_stat.zs_indirect_block_size;
+	}
+	return (error);
 }
 
 /*
