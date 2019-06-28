@@ -61,6 +61,7 @@
 #include <sys/zfs_ioctl.h>
 #include <sys/mount.h>
 #include <sys/sysmacros.h>
+#include <sys/range_tree.h>
 
 #include <math.h>
 
@@ -1814,8 +1815,8 @@ typedef struct status_cbdata {
 	int		cb_count;
 	int		cb_name_flags;
 	int		cb_namewidth;
+	unsigned int	cb_verbose;
 	boolean_t	cb_allpools;
-	boolean_t	cb_verbose;
 	boolean_t	cb_literal;
 	boolean_t	cb_explain;
 	boolean_t	cb_first;
@@ -7236,7 +7237,17 @@ print_checkpoint_status(pool_checkpoint_stat_t *pcs)
 }
 
 static void
-print_error_log(zpool_handle_t *zhp)
+print_error_log_range_tree_cb(void *arg, uint64_t start, uint64_t size)
+{
+	char str[32];
+
+	zfs_nicenum(size, str, sizeof(str));
+
+	printf("%11s[0x%lx-0x%lx] (%s)\n", "", start, start + size - 1, str);
+}
+
+static void
+print_error_log(zpool_handle_t *zhp, unsigned int verbose)
 {
 	nvlist_t *nverrlist = NULL;
 	nvpair_t *elem;
@@ -7257,6 +7268,7 @@ print_error_log(zpool_handle_t *zhp)
 		uint64_t *block_ids;
 		int64_t *indrt_levels;
 		unsigned int error_count;
+		int rc = 0;
 
 		verify(nvpair_value_nvlist(elem, &nv) == 0);
 		verify(nvlist_lookup_uint64(nv, ZPOOL_ERR_DATASET,
@@ -7270,43 +7282,53 @@ print_error_log(zpool_handle_t *zhp)
 
 		zpool_obj_to_path(zhp, dsobj, obj, pathname, len);
 
-		if (error_count > 0 && zpool_get_block_size(zhp, obj,
-		    &data_block_size, &indirect_block_size) == 0) {
-			uint64_t blkptrs_in_ind =
-			    indirect_block_size / sizeof (blkptr_t);
-			uint64_t min_offset_blks =
-			    pow(blkptrs_in_ind, indrt_levels[0]) * block_ids[0];
-			uint64_t max_offset_blks =
-			    pow(blkptrs_in_ind, indrt_levels[0]) * block_ids[0];
-			/*
-			 * Iterate through the error blockids and find minimum
-			 * and maximax offset.
-			 */
-			for (int i = 1; i < error_count; i++) {
-				uint64_t offset_blks =
-				    pow(blkptrs_in_ind,
-				    indrt_levels[i]) * block_ids[i];
-				min_offset_blks =
-				    MIN(min_offset_blks, offset_blks);
-				max_offset_blks =
-				    MAX(max_offset_blks, offset_blks);
+		if (error_count > 0) {
+			rc = zpool_get_block_size(zhp, dsobj, obj,
+			    &data_block_size, &indirect_block_size);
+		}
+		if (rc == 0) {
+			char str[32];
+			zfs_nicenum(data_block_size, str, sizeof(str));
+
+			(void) printf("%7s %s: found %u corrupted %s %s\n",
+			     "", pathname, error_count, str,
+			     error_count == 1 ? "block" : "blocks");
+
+			if (verbose > 1) {
+				range_tree_t *range_tree;
+				range_tree_init();
+				range_tree = range_tree_create(NULL, NULL);
+				if (!range_tree)
+					goto fail;
+
+				/* Add all our blocks to the range tree */
+				for (int i = 0; i < error_count; i++) {
+					uint8_t blkptr_size_shift = 0;
+					uint8_t indirect_block_shift = 0;
+					uint64_t offset_blks = block_ids[i] <<
+					    ((indirect_block_shift -
+					    blkptr_size_shift) * indrt_levels[i]);
+
+					range_tree_add(range_tree,
+					    offset_blks * data_block_size,
+					    data_block_size);
+				}
+
+				/* Print out our ranges */
+				range_tree_walk(range_tree,
+				    print_error_log_range_tree_cb, NULL);
+
+				printf("\n");
+				range_tree_vacate(range_tree, NULL, NULL);
+				range_tree_destroy(range_tree);
+				range_tree_fini();
 			}
-			uint64_t min_offset_byte =
-			    data_block_size * min_offset_blks;
-			uint64_t max_offset_byte =
-			    data_block_size * max_offset_blks;
-			uint64_t data_block_size_kb = data_block_size / 1024;
-			(void) printf("%7s %s %u corrupted %lluKB sized blocks "
-			    "found between %#llx and %#llx byte relative to "
-			    "file beginning\n ", "", pathname, error_count,
-			    (u_longlong_t)data_block_size_kb,
-			    (u_longlong_t)min_offset_byte,
-			    (u_longlong_t)max_offset_byte);
 		} else {
 			(void) printf("%7s %s %s\n", "", pathname, " can not "
 			    "determine error offset");
 		}
 	}
+fail:
 	free(pathname);
 	nvlist_free(nverrlist);
 }
@@ -7800,7 +7822,7 @@ status_callback(zpool_handle_t *zhp, void *data)
 				    "errors, use '-v' for a list\n"),
 				    (u_longlong_t)nerr);
 			else
-				print_error_log(zhp);
+				print_error_log(zhp, cbp->cb_verbose);
 		}
 
 		if (cbp->cb_dedup_stats)
@@ -7888,7 +7910,7 @@ zpool_do_status(int argc, char **argv)
 			cb.cb_print_slow_ios = B_TRUE;
 			break;
 		case 'v':
-			cb.cb_verbose = B_TRUE;
+			cb.cb_verbose++;
 			break;
 		case 'x':
 			cb.cb_explain = B_TRUE;

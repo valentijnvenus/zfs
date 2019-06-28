@@ -16,7 +16,8 @@ zpool_SOURCES = \
 zpool_LDADD = \
 	$(top_builddir)/lib/libnvpair/libnvpair.la \
 	$(top_builddir)/lib/libuutil/libuutil.la \
-	$(top_builddir)/lib/libzfs/libzfs.la
+	$(top_builddir)/lib/libzfs/libzfs.la \
+	$(top_builddir)/lib/libzpool/libzpool.la
 
 zpool_LDADD += -lm $(LIBBLKID)
 
