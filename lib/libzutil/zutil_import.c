@@ -65,6 +65,7 @@
 
 #include <thread_pool.h>
 #include <libzutil.h>
+#include <libzfs_internal.h>
 #include <libnvpair.h>
 
 #include "zutil_import.h"
@@ -1703,6 +1704,8 @@ zpool_find_import_cached(libpc_handle_t *hdl, importargs_t *iarg)
 			nvlist_free(pools);
 			return (NULL);
 		}
+
+		update_vdevs_config_dev_sysfs_path(src);
 
 		if ((dst = zutil_refresh_config(hdl, src)) == NULL) {
 			nvlist_free(raw);

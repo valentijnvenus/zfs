@@ -170,6 +170,7 @@ AC_CONFIG_FILES([
 	lib/libzpool/Makefile
 	lib/libzstd/Makefile
 	lib/libzutil/Makefile
+	lib/libzfs_internal/Makefile
 	man/Makefile
 	module/Kbuild
 	module/Makefile

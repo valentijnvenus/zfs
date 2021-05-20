@@ -47,6 +47,7 @@
 #include <unistd.h>
 #include <libintl.h>
 #include <libuutil.h>
+#include <libzfs_internal.h>
 
 #include "libzfs_impl.h"
 
@@ -219,9 +220,7 @@ namespace_reload(libzfs_handle_t *hdl)
 nvlist_t *
 zpool_get_config(zpool_handle_t *zhp, nvlist_t **oldconfig)
 {
-	if (oldconfig)
-		*oldconfig = zhp->zpool_old_config;
-	return (zhp->zpool_config);
+	return (zpool_get_config_impl(zhp, oldconfig));
 }
 
 /*

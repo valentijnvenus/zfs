@@ -14,7 +14,7 @@ endif
 SUBDIRS += libnvpair
 
 # libzutil depends on libefi if present
-SUBDIRS += libzutil libunicode
+SUBDIRS += libzfs_internal libzutil libunicode
 
 # These five libraries, which are installed as the final build product,
 # incorporate the eight convenience libraries given above.

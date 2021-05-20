@@ -70,6 +70,7 @@
 
 #include <libzfs.h>
 #include <libzutil.h>
+#include <libzfs_internal.h>
 
 #include "zpool_util.h"
 #include "zfs_comutil.h"

@@ -42,7 +42,8 @@ libzutil_la_LIBADD = \
 	$(abs_top_builddir)/lib/libavl/libavl.la \
 	$(abs_top_builddir)/lib/libtpool/libtpool.la \
 	$(abs_top_builddir)/lib/libnvpair/libnvpair.la \
-	$(abs_top_builddir)/lib/libspl/libspl.la
+	$(abs_top_builddir)/lib/libspl/libspl.la \
+	$(abs_top_builddir)/lib/libzfs_internal/libzfs_internal.la
 
 if BUILD_LINUX
 libzutil_la_LIBADD += \
