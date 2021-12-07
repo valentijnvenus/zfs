@@ -236,7 +236,9 @@ bio_set_bi_status(struct bio *bio, int error)
 {
 	ASSERT3S(error, <=, 0);
 	bio->bi_status = errno_to_bi_status(-error);
+#ifndef HAVE_BLK_MQ
 	bio_endio(bio);
+#endif
 }
 #else
 #define	BIO_END_IO_ERROR(bio)		(-(bio->bi_error))
@@ -247,7 +249,9 @@ bio_set_bi_error(struct bio *bio, int error)
 {
 	ASSERT3S(error, <=, 0);
 	bio->bi_error = error;
+#ifndef HAVE_BLK_MQ
 	bio_endio(bio);
+#endif
 }
 #endif /* HAVE_BIO_BI_STATUS */
 
