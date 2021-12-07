@@ -40,18 +40,41 @@
 
 #include <linux/blkdev_compat.h>
 #include <linux/task_io_accounting_ops.h>
+#include <linux/blk-mq.h>
+
+static void zvol_request_impl(zvol_state_t *zv, struct bio *bio,
+    boolean_t force_sync);
 
 unsigned int zvol_major = ZVOL_MAJOR;
 unsigned int zvol_request_sync = 0;
 unsigned int zvol_prefetch_bytes = (128 * 1024);
 unsigned long zvol_max_discard_blocks = 16384;
-unsigned int zvol_threads = 32;
 unsigned int zvol_open_timeout_ms = 1000;
+
+/*
+ * zvol_threads is the module param the user passes in.
+ *
+ * zvol_actual_threads is what we use internally, since the user can pass
+ * zvol_thread = 0 to mean "use all the CPUs" (the default).  So on a quad
+ * core system, you would have: zvol_threads = 0, zvol_actual_threads = 4.
+ */
+unsigned int zvol_threads = 0;
+unsigned int zvol_actual_threads;
+
+#ifdef HAVE_BLK_MQ
+kmem_cache_t *blk_mq_cache = NULL;
+unsigned int zvol_blk_mq_queue_depth = BLKDEV_MAX_RQ;
+unsigned int zvol_actual_blk_mq_queue_depth;
+#endif
 
 struct zvol_state_os {
 	struct gendisk		*zvo_disk;	/* generic disk */
 	struct request_queue	*zvo_queue;	/* request queue */
 	dev_t			zvo_dev;	/* device id */
+
+#ifdef HAVE_BLK_MQ
+	struct blk_mq_tag_set tag_set;
+#endif
 };
 
 taskq_t *zvol_taskq;
@@ -61,6 +84,11 @@ typedef struct zv_request_stack {
 	zvol_state_t	*zv;
 	struct bio	*bio;
 } zv_request_t;
+
+typedef struct zv_work {
+	struct request  *rq;
+	struct work_struct work;
+} zv_work_t;
 
 typedef struct zv_request_task {
 	zv_request_t zvr;
@@ -82,6 +110,108 @@ zv_request_task_free(zv_request_task_t *task)
 {
 	kmem_free(task, sizeof (*task));
 }
+
+#ifdef HAVE_BLK_MQ
+/*
+ * This is our blk-mq workqueue callback function.  It's here that
+ * we process all the BIOs in a request.
+ */
+static void zvol_mq_work_func(struct work_struct *work)
+{
+	zv_work_t *zv_work;
+	struct bio *bio = NULL;
+	struct request *rq;
+	zvol_state_t *zv;
+	blk_status_t res = BLK_STS_OK;
+
+	zv_work = container_of(work, zv_work_t, work);
+	rq = zv_work->rq;
+	zv = rq->q->queuedata;
+
+	/* Tell the kernel that we are starting to process this request */
+	blk_mq_start_request(rq);
+
+	if (blk_rq_is_passthrough(rq)) {
+		/* Skip non filesystem request */
+		blk_mq_end_request(rq, BLK_STS_IOERR);
+		goto out;
+	}
+
+	/* Execute the BIOs in this request. */
+	__rq_for_each_bio(bio, rq) {
+		zvol_request_impl(zv, bio, 1);
+
+		/* Did this BIO cause an error?  If so, stop the request */
+#ifdef HAVE_BIO_BI_STATUS
+		res = bio->bi_status;
+#else
+		res = bio->bi_error;
+#endif
+		if (res != BLK_STS_OK) {
+			/* Got an error */
+			break;
+		}
+	}
+
+	/* All done */
+	blk_mq_end_request(rq, res);
+
+out:
+	kmem_cache_free(blk_mq_cache, zv_work);
+}
+
+/*
+ * This is called when a new block multiqueue request comes in.  A request
+ * contains one or more BIOs.  This function is run from an atomic context.
+ */
+static blk_status_t zvol_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
+    const struct blk_mq_queue_data *bd)
+{
+	struct request *rq = bd->rq;
+	zv_work_t *zv_work;
+
+	/*
+	 * Add the request to our workqueue for processing later since we're
+	 * currently in an atomic context and our bio processing code can sleep.
+	 */
+	zv_work = kmem_cache_alloc(blk_mq_cache, KM_NOSLEEP);
+	if (!zv_work) {
+		/* Try again, maybe memory will free up */
+		return (BLK_STS_AGAIN);
+	}
+	INIT_WORK(&zv_work->work, zvol_mq_work_func);
+	zv_work->rq = rq;
+	schedule_work(&zv_work->work);
+
+	/* Acknowledge to the kernel that we got this request */
+	return (BLK_STS_OK);
+}
+
+static struct blk_mq_ops my_queue_ops = {
+	.queue_rq = zvol_mq_queue_rq,
+};
+
+/* Initialize our blk-mq struct */
+static int zvol_blk_mq_alloc_tag_set(zvol_state_t *zv)
+{
+	int err;
+	struct zvol_state_os *zso = zv->zv_zso;
+
+	memset(&zso->tag_set, 0, sizeof (zso->tag_set));
+
+	/* Initialize tag set. */
+	zso->tag_set.ops = &my_queue_ops;
+	zso->tag_set.nr_hw_queues = zvol_actual_threads;
+	zso->tag_set.queue_depth = zvol_actual_blk_mq_queue_depth;
+	zso->tag_set.numa_node = NUMA_NO_NODE;
+	zso->tag_set.cmd_size = 0;
+	zso->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
+	zso->tag_set.driver_data = zv;
+	err = blk_mq_alloc_tag_set(&zso->tag_set);
+
+	return (err);
+}
+#endif /* HAVE_BLK_MQ */
 
 /*
  * Given a path, return TRUE if path is a ZVOL.
@@ -336,31 +466,23 @@ zvol_read_task(void *arg)
 	zv_request_task_free(task);
 }
 
-#ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
-#ifdef HAVE_BDEV_SUBMIT_BIO_RETURNS_VOID
+/*
+ * Process a BIO
+ *
+ * force_sync:	Set to 0 to defer processing the BIO to a background taskq
+ * 		Set to 1 to process the BIO right now.
+ */
 static void
-zvol_submit_bio(struct bio *bio)
-#else
-static blk_qc_t
-zvol_submit_bio(struct bio *bio)
-#endif
-#else
-static MAKE_REQUEST_FN_RET
-zvol_request(struct request_queue *q, struct bio *bio)
-#endif
+zvol_request_impl(zvol_state_t *zv, struct bio *bio, boolean_t force_sync)
 {
-#ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
-#if defined(HAVE_BIO_BDEV_DISK)
-	struct request_queue *q = bio->bi_bdev->bd_disk->queue;
-#else
-	struct request_queue *q = bio->bi_disk->queue;
-#endif
-#endif
-	zvol_state_t *zv = q->queuedata;
 	fstrans_cookie_t cookie = spl_fstrans_mark();
 	uint64_t offset = BIO_BI_SECTOR(bio) << 9;
 	uint64_t size = BIO_BI_SIZE(bio);
 	int rw = bio_data_dir(bio);
+
+	if (zvol_request_sync) {
+		force_sync = 1;
+	}
 
 	if (bio_has_data(bio) && offset + size > zv->zv_volsize) {
 		printk(KERN_INFO
@@ -443,7 +565,7 @@ zvol_request(struct request_queue *q, struct bio *bio)
 		 * the i/o to complete).
 		 */
 		if (bio_is_discard(bio) || bio_is_secure_erase(bio)) {
-			if (zvol_request_sync) {
+			if (force_sync) {
 				zvol_discard(&zvr);
 			} else {
 				task = zv_request_task_create(zvr);
@@ -451,7 +573,7 @@ zvol_request(struct request_queue *q, struct bio *bio)
 				    zvol_discard_task, task, 0, &task->ent);
 			}
 		} else {
-			if (zvol_request_sync) {
+			if (force_sync) {
 				zvol_write(&zvr);
 			} else {
 				task = zv_request_task_create(zvr);
@@ -473,7 +595,7 @@ zvol_request(struct request_queue *q, struct bio *bio)
 		rw_enter(&zv->zv_suspend_lock, RW_READER);
 
 		/* See comment in WRITE case above. */
-		if (zvol_request_sync) {
+		if (force_sync) {
 			zvol_read(&zvr);
 		} else {
 			task = zv_request_task_create(zvr);
@@ -484,12 +606,40 @@ zvol_request(struct request_queue *q, struct bio *bio)
 
 out:
 	spl_fstrans_unmark(cookie);
-#if (defined(HAVE_MAKE_REQUEST_FN_RET_QC) || \
-	defined(HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS)) && \
+}
+
+
+#ifndef HAVE_BLK_MQ
+#ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
+#ifdef HAVE_BDEV_SUBMIT_BIO_RETURNS_VOID
+static void
+zvol_submit_bio(struct bio *bio)
+#else
+static blk_qc_t
+zvol_submit_bio(struct bio *bio)
+#endif
+#else
+static MAKE_REQUEST_FN_RET
+zvol_request(struct request_queue *q, struct bio *bio)
+#endif
+{
+#ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
+#if defined(HAVE_BIO_BDEV_DISK)
+	struct request_queue *q = bio->bi_bdev->bd_disk->queue;
+#else
+	struct request_queue *q = bio->bi_disk->queue;
+#endif
+#endif
+	zvol_state_t *zv = q->queuedata;
+
+	zvol_request_impl(zv, bio, 0);
+#if defined(HAVE_MAKE_REQUEST_FN_RET_QC) || \
+	defined(HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS) && \
 	!defined(HAVE_BDEV_SUBMIT_BIO_RETURNS_VOID)
 	return (BLK_QC_T_NONE);
 #endif
 }
+#endif /* !HAVE_BLK_MQ */
 
 static int
 zvol_open(struct block_device *bdev, fmode_t flag)
@@ -818,8 +968,11 @@ static struct block_device_operations zvol_ops = {
 #endif
 	.getgeo			= zvol_getgeo,
 	.owner			= THIS_MODULE,
+
+#ifndef HAVE_BLK_MQ
 #ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
 	.submit_bio		= zvol_submit_bio,
+#endif
 #endif
 };
 
@@ -851,8 +1004,58 @@ zvol_alloc(dev_t dev, const char *name)
 	list_link_init(&zv->zv_next);
 	mutex_init(&zv->zv_state_lock, NULL, MUTEX_DEFAULT, NULL);
 
-#ifdef HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS
-#ifdef HAVE_BLK_ALLOC_DISK
+	/*
+	 * Just to decode this #ifdef rat's nest a little...
+	 *
+	 * The block layer has 3 interfaces for getting BIOs:
+	 *
+	 * 1. blk-mq request queues (new)
+	 * 2. submit_bio() (oldest)
+	 * 3. regular request queues (old).
+	 *
+	 * Each of those interfaces has two permutations:
+	 *
+	 * a) We have blk_alloc_disk()/blk_mq_alloc_disk(), which allocates
+	 *    both the disk and its queue (5.14 kernel or newer)
+	 *
+	 * b) We don't have blk_*alloc_disk(), and have to allocate the
+	 *    disk and the queue separately. (5.13 kernel or older)
+	 */
+#if defined(HAVE_BLK_MQ)
+
+	/* Allocate our blk-mq tag_set */
+	if (zvol_blk_mq_alloc_tag_set(zv) != 0)
+		goto out_kmem;
+
+#if defined(HAVE_BLK_ALLOC_DISK)
+	zso->zvo_disk = blk_mq_alloc_disk(&zso->tag_set, zv);
+	if (zso->zvo_disk == NULL)
+		goto out_kmem;
+	zso->zvo_queue = zso->zvo_disk->queue;
+	zso->zvo_disk->minors = ZVOL_MINORS;
+#else
+	zso->zvo_disk = alloc_disk(ZVOL_MINORS);
+	if (zso->zvo_disk == NULL) {
+		blk_cleanup_queue(zso->zvo_queue);
+		goto out_kmem;
+	}
+	/* Allocate queue */
+	zso->zvo_queue = blk_mq_init_queue(&zso->tag_set);
+	if (IS_ERR(zso->zvo_queue)) {
+		blk_mq_free_tag_set(&zso->tag_set);
+		goto out_kmem;
+	}
+
+	/* Our queue is now created, assign it to our disk */
+	zso->zvo_disk->queue = zso->zvo_queue;
+
+#endif /* HAVE_BLK_ALLOC_DISK */
+
+	/* Finish blk-mq init */
+	blk_queue_logical_block_size(zso->zvo_queue, 512);
+
+#elif defined(HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS)
+#if defined(HAVE_BLK_ALLOC_DISK)
 	zso->zvo_disk = blk_alloc_disk(NUMA_NO_NODE);
 	if (zso->zvo_disk == NULL)
 		goto out_kmem;
@@ -958,6 +1161,10 @@ zvol_free(zvol_state_t *zv)
 	ASSERT0(zv->zv_open_count);
 	ASSERT3P(zv->zv_zso->zvo_disk->private_data, ==, NULL);
 
+#ifdef HAVE_BLK_MQ
+	flush_scheduled_work();
+#endif
+
 	rw_destroy(&zv->zv_suspend_lock);
 	zfs_rangelock_fini(&zv->zv_rangelock);
 
@@ -968,6 +1175,10 @@ zvol_free(zvol_state_t *zv)
 #else
 	blk_cleanup_queue(zv->zv_zso->zvo_queue);
 	put_disk(zv->zv_zso->zvo_disk);
+#endif
+
+#ifdef HAVE_BLK_MQ
+	blk_mq_free_tag_set(&zv->zv_zso->tag_set);
 #endif
 
 	ida_simple_remove(&zvol_ida,
@@ -1179,19 +1390,47 @@ int
 zvol_init(void)
 {
 	int error;
-	int threads = MIN(MAX(zvol_threads, 1), 1024);
+
+	if (zvol_threads == 0) {
+		zvol_actual_threads = num_online_cpus();
+	} else {
+		zvol_actual_threads = MIN(MAX(zvol_threads, 1), 1024);
+	}
 
 	error = register_blkdev(zvol_major, ZVOL_DRIVER);
 	if (error) {
 		printk(KERN_INFO "ZFS: register_blkdev() failed %d\n", error);
 		return (error);
 	}
-	zvol_taskq = taskq_create(ZVOL_DRIVER, threads, maxclsyspri,
-	    threads * 2, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC);
+
+#ifdef	HAVE_BLK_MQ
+	if (zvol_blk_mq_queue_depth == 0) {
+		/* Use the default */
+		zvol_actual_blk_mq_queue_depth = BLKDEV_MAX_RQ;
+	} else {
+		/*
+		 * Bracket the user's zvol_blk_mq_queue_depth value to between
+		 * the kernel's min/max limits.
+		 */
+		zvol_actual_blk_mq_queue_depth = MIN(
+		    MAX(zvol_blk_mq_queue_depth, BLKDEV_MIN_RQ), BLKDEV_MAX_RQ);
+	}
+
+	/* Create a kmem cache for all our blk-mq work items */
+	blk_mq_cache = kmem_cache_create("blk_mq_cache",
+	    sizeof (zv_work_t), 0, NULL, NULL, NULL, NULL, NULL, 0);
+	if (!blk_mq_cache)
+		return (-ENOMEM);
+#else
+	/* We're not using blk-mq so setup taskqueues */
+	zvol_taskq = taskq_create(ZVOL_DRIVER, zvol_actual_threads, maxclsyspri,
+	    zvol_actual_threads, INT_MAX,
+	    TASKQ_PREPOPULATE | TASKQ_DYNAMIC);
 	if (zvol_taskq == NULL) {
 		unregister_blkdev(zvol_major, ZVOL_DRIVER);
 		return (-ENOMEM);
 	}
+#endif
 	zvol_init_impl();
 	ida_init(&zvol_ida);
 	zvol_register_ops(&zvol_linux_ops);
@@ -1203,7 +1442,11 @@ zvol_fini(void)
 {
 	zvol_fini_impl();
 	unregister_blkdev(zvol_major, ZVOL_DRIVER);
+#ifdef HAVE_BLK_MQ
+	kmem_cache_destroy(blk_mq_cache);
+#else
 	taskq_destroy(zvol_taskq);
+#endif
 	ida_destroy(&zvol_ida);
 }
 
@@ -1215,7 +1458,8 @@ module_param(zvol_major, uint, 0444);
 MODULE_PARM_DESC(zvol_major, "Major number for zvol device");
 
 module_param(zvol_threads, uint, 0444);
-MODULE_PARM_DESC(zvol_threads, "Max number of threads to handle I/O requests");
+MODULE_PARM_DESC(zvol_threads, "Number of threads to handle I/O requests. Set"
+    "to 0 to use all active CPUs");
 
 module_param(zvol_request_sync, uint, 0644);
 MODULE_PARM_DESC(zvol_request_sync, "Synchronously handle bio requests");
@@ -1228,4 +1472,10 @@ MODULE_PARM_DESC(zvol_prefetch_bytes, "Prefetch N bytes at zvol start+end");
 
 module_param(zvol_volmode, uint, 0644);
 MODULE_PARM_DESC(zvol_volmode, "Default volmode property value");
+
+#ifdef HAVE_BLK_MQ
+module_param(zvol_blk_mq_queue_depth, uint, 0644);
+MODULE_PARM_DESC(zvol_blk_mq_queue_depth, "Default blk-mq queue depth");
+#endif
+
 /* END CSTYLED */

@@ -2177,9 +2177,23 @@ for each I/O submitter.
 When unset, requests are handled asynchronously by a thread pool.
 The number of requests which can be handled concurrently is controlled by
 .Sy zvol_threads .
+On blk-mq kernels, zvol_request_sync is ignored.
 .
-.It Sy zvol_threads Ns = Ns Sy 32 Pq uint
-Max number of threads which can handle zvol I/O requests concurrently.
+.It Sy zvol_threads Ns = Ns Sy 0 Pq uint
+The number of threads to use for processing zvol block IOs.
+On older non-blk-mq kernels, zvol_threads is the total number of threads to
+use for all zvols.
+On newer, blk-mq kernels, zvol_threads is the total number of threads per-zvol.
+If zvol_threads = 0 (the default) then internally set zvol_threads to the
+number of CPUs present.
+.It Sy zvol_blk_mq_queue_depth Ns = Ns Sy 0 Pq uint
+The queue_depth value for the zvol block multiqueue (blk-mq) interface.
+This parameter will only appear if your kernel supports blk-mq.
+zvol_blk_mq_queue_depth is only read at zvol load time.
+If zvol_blk_mq_queue_depth=0 (the default) then use the kernel's max
+queue depth.
+Note the min and max values for zvol_blk_mq_queue_depth will be automatically
+capped to the kernel's BLKDEV_MIN_RQ and BLKDEV_MAX_RQ constants.
 .
 .It Sy zvol_volmode Ns = Ns Sy 1 Pq uint
 Defines zvol block devices behaviour when
