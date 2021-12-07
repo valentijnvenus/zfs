@@ -230,30 +230,34 @@ errno_to_bi_status(int error)
 #ifdef HAVE_BIO_BI_STATUS
 #define	BIO_END_IO_ERROR(bio)		bi_status_to_errno(bio->bi_status)
 #define	BIO_END_IO_PROTO(fn, x, z)	static void fn(struct bio *x)
-#define	BIO_END_IO(bio, error)		bio_set_bi_status(bio, error)
+#define	BIO_END_IO(bio, error, finalize)	bio_set_bi_status(bio, error, \
+						    finalize)
 static inline void
-bio_set_bi_status(struct bio *bio, int error)
+bio_set_bi_status(struct bio *bio, int error, int finalize)
 {
 	ASSERT3S(error, <=, 0);
 	bio->bi_status = errno_to_bi_status(-error);
-	bio_endio(bio);
+	if (finalize)
+		bio_endio(bio);
 }
 #else
 #define	BIO_END_IO_ERROR(bio)		(-(bio->bi_error))
 #define	BIO_END_IO_PROTO(fn, x, z)	static void fn(struct bio *x)
-#define	BIO_END_IO(bio, error)		bio_set_bi_error(bio, error)
+#define	BIO_END_IO(bio, error, finalize)	bio_set_bi_error(bio, error, \
+						    finalize)
 static inline void
-bio_set_bi_error(struct bio *bio, int error)
+bio_set_bi_error(struct bio *bio, int error, int finalize)
 {
 	ASSERT3S(error, <=, 0);
 	bio->bi_error = error;
-	bio_endio(bio);
+	if (finalize)
+		bio_endio(bio);
 }
 #endif /* HAVE_BIO_BI_STATUS */
 
 #else
 #define	BIO_END_IO_PROTO(fn, x, z)	static void fn(struct bio *x, int z)
-#define	BIO_END_IO(bio, error)		bio_endio(bio, error);
+#define	BIO_END_IO(bio, error, finalize)	bio_endio(bio, error);
 #endif /* HAVE_1ARG_BIO_END_IO_T */
 
 /*
