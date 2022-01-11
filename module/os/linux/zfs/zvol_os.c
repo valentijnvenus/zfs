@@ -41,6 +41,7 @@
 #include <linux/blkdev_compat.h>
 #include <linux/task_io_accounting_ops.h>
 #include <linux/blk-mq.h>
+#include <linux/bio.h>
 
 static void zvol_request_impl(zvol_state_t *zv, struct bio *bio,
     boolean_t force_sync);
@@ -82,7 +83,7 @@ static struct ida zvol_ida;
 
 typedef struct zv_request_stack {
 	zvol_state_t	*zv;
-	struct bio	*bio;
+	zfs_uio_t	*uio;
 } zv_request_t;
 
 typedef struct zv_work {
@@ -111,6 +112,177 @@ zv_request_task_free(zv_request_task_t *task)
 	kmem_free(task, sizeof (*task));
 }
 
+static int
+zvol_uio_is_beyond_disk_space(zvol_state_t *zv, zfs_uio_t *uio)
+{
+        uint64_t offset = uio->uio_loffset;
+        uint64_t size = uio->uio_resid;
+	return (uio->uio_has_data && offset + size > zv->zv_volsize);
+}
+
+/* Return 1 if bio is mergable.  0 if not. */
+static int
+zvol_bio_is_mergable(zvol_state_t *zv, struct bio *bio)
+{
+	/*
+	 * Is the bio not a vanilla read or write (not a FUA or flush or trim)?
+	 * Are any of the bytes of the BIO already partially completed?
+	 *
+	 * If the answer is yes to any of these, then the bio is not mergable.
+	 */
+	printk("%s:		op %x, has_data %d, is_flush %d, is_fua %d, is_discard %d, is_secure %d,  skip %d",
+		__func__, bio_op(bio), bio_has_data(bio), bio_is_flush(bio), bio_is_fua(bio), bio_is_discard(bio), bio_is_secure_erase(bio),
+		BIO_BI_SKIP(bio));
+	return (bio_has_data(bio) &&
+		!bio_is_flush(bio) &&
+		!bio_is_fua(bio) &&
+		!bio_is_discard(bio) &&
+		!bio_is_secure_erase(bio) &&
+		BIO_BI_SKIP(bio) == 0);
+}
+
+/*
+ * Return the total number of BIOs in the request if the following conditions
+ * are true:
+ *
+ * 1. BIOs are all vanilla reads or all vanilla writes (no flushes, or FUAs)
+ * 2. BIOs are accessing contiguous sectors and increasing in offset.
+ *
+ * Return 0 if not.
+ *
+ * Note we return the total number of BIOs here rather than a simple boolean, since
+ * it saves us the cost of doing a blk_rq_count_bios() later.
+ */
+static
+unsigned int zvol_request_is_mergable(zvol_state_t *zv, struct request *rq)
+{
+	struct bio *bio = NULL;
+	sector_t next_start_sector = 0;
+	unsigned int count = 0;
+	printk("%s: begin, processing request %p, size=%d, segs=%d, op=0x%x\n",
+		__func__, rq,  blk_rq_bytes(rq), rq->nr_phys_segments, req_op(rq));
+
+	/* Iterate through the BIOs */
+	__rq_for_each_bio(bio, rq) {
+		printk("%s:	looking at bio page=%p, len=%d offset=%d\n",
+			__func__, bio->bi_io_vec->bv_page, bio->bi_io_vec->bv_len, bio->bi_io_vec->bv_offset);
+		if (!zvol_bio_is_mergable(zv, bio)) {
+			/* Can't merge it */
+			printk("%s:	bio isn't mergable\n", __func__);
+			count = 0;
+			break;
+		}
+
+		/* Check that it's contiguous */
+		if (count > 0) {
+			// TODO: make sure next_start_sector doesnt wrap around
+
+			if (next_start_sector != BIO_BI_SECTOR(bio)) {
+				printk("%s:	not contig %lu %lu\n",
+					__func__, (unsigned long) next_start_sector + 1, (unsigned long) BIO_BI_SECTOR(bio));
+
+				/* Not contiguous */
+				count = 0;
+				break;
+			}
+		}
+
+		/* Record the last sector for this bio */
+		
+		next_start_sector = bio_end_sector(bio); /* If you write 4k, (512B secotors), bio_end_sector(bio) == 8, not 7 */
+		printk("%s:	mergable! %lu + %lu = %lu (end sector %lu)\n", __func__,
+			(unsigned long) BIO_BI_SECTOR(bio), (unsigned long) BIO_BI_SIZE(bio), (unsigned long) next_start_sector, (unsigned long) bio_end_sector(bio));
+		count++;
+	}
+
+	printk("%s: done with request %p\n", __func__, rq);
+	return count;
+}
+
+/*
+ * Free all allocated fields within a uio, without freeing the uio
+ * struct itself.  This only needs to be called if your uio was initialized
+ * with zvol_request_to_uio().
+ */
+static void
+zvol_uio_free(zfs_uio_t *uio)
+{
+	kmem_free(uio->uio_bvec, sizeof (*uio->uio_bvec) * uio->uio_iovcnt);
+}
+
+/*
+ * Merge all the bios from a request into a single uio.  This only works if
+ * all the bios are contiguous, non-flushing, and all reads or all writes.
+ * If it's unable to merge, then no big deal, just return 1, and the caller
+ * can pass the bios individually.
+ *
+ * On success, the uninitialized 'uio' struct passed in will be fully
+ * initialized.
+ */
+static
+int zvol_request_to_merged_uio(zvol_state_t *zv, struct request *rq, zfs_uio_t *uio)
+{
+	unsigned int bvec_count = 0, bio_count;
+	struct bio_vec tmp_bvec = {0};	/* uninitialized warnings */
+	struct req_iterator rq_iter;
+	unsigned int i;
+	printk("%s: begin request %p\n", __func__, rq);
+
+	/*
+	 * Can ALL the BIOs in this request be merged into one contiguous
+	 * uio?
+	 */
+	bio_count = zvol_request_is_mergable(zv, rq);
+	if (bio_count <= 1) {
+		/* Not enough BIOs to merge, or can't merge (bio_count = 0) */
+		return EINVAL;
+	}
+
+	rq_for_each_bvec(tmp_bvec, rq, rq_iter) {
+		bvec_count++;
+	}
+
+        zfs_uio_common_init(uio);
+
+	/*
+	 * We're going to allocate a new uio_bvec[] containing the
+	 * io_bvec[] from all the BIOs.
+	 */
+	/* TODO: Use GFP_NOIO here? */
+	uio->uio_bvec = kmem_alloc(sizeof (*uio->uio_bvec) * bvec_count, KM_SLEEP);
+	if (!uio->uio_bvec) {
+		return ENOMEM;
+	}
+	uio->uio_merged = B_TRUE;
+
+	/* The data size of this request */
+	uio->uio_resid += blk_rq_bytes(rq);
+
+	/* The first BIO in the request has our offset */
+	uio->uio_loffset = BIO_BI_SECTOR(rq->bio) << 9;
+
+	/* Copy all the IO vectors to our array */
+	i = 0;
+	rq_for_each_bvec(tmp_bvec, rq, rq_iter) {
+		uio->uio_bvec[i] = tmp_bvec;
+		i++;
+	}
+
+	/*
+	 * We know this is 0 form our earlier checks in
+	 * zvol_request_is_mergable().
+	 */
+	uio->uio_skip = 0;
+
+	uio->uio_segflg = UIO_BVEC;
+	uio->uio_fault_disable = B_FALSE;
+	uio->uio_iovcnt = bvec_count;
+	uio->uio_is_flush = 0;
+	uio->uio_has_data = 1;
+
+	return 0;
+}
+
 #ifdef HAVE_BLK_MQ
 /*
  * This is our blk-mq workqueue callback function.  It's here that
@@ -123,10 +295,13 @@ static void zvol_mq_work_func(struct work_struct *work)
 	struct request *rq;
 	zvol_state_t *zv;
 	blk_status_t res = BLK_STS_OK;
+	zfs_uio_t uio = {0};
+	int can_merge;
 
 	zv_work = container_of(work, zv_work_t, work);
 	rq = zv_work->rq;
 	zv = rq->q->queuedata;
+	printk("%s: work begin %p\n", __func__, rq);
 
 	/* Tell the kernel that we are starting to process this request */
 	blk_mq_start_request(rq);
@@ -137,20 +312,43 @@ static void zvol_mq_work_func(struct work_struct *work)
 		goto out;
 	}
 
-	/* Execute the BIOs in this request. */
-	__rq_for_each_bio(bio, rq) {
-		zvol_request_impl(zv, bio, 1);
+	if (zvol_request_to_merged_uio(zv, rq, &uio) == 0) {
+		/* 
+		 * Nice, all the bios in the request could be merged into
+		 * one big uio
+		 */
 
-		/* Did this BIO cause an error?  If so, stop the request */
+		can_merge = 1;
+	}
+
+	if (can_merge) {
+		zvol_request_uio(zv, &uio);
+	} else {
+		/* Execute the BIOs in this request. */
+
+		__rq_for_each_bio(bio, rq) {
+			zvol_request_impl(zv, bio, 1);
+
+			/* Did this BIO cause an error?  If so, stop the request */
 #ifdef HAVE_BIO_BI_STATUS
-		res = bio->bi_status;
+			res = bio->bi_status;
 #else
-		res = bio->bi_error;
+			res = bio->bi_error;
 #endif
-		if (res != BLK_STS_OK) {
-			/* Got an error */
-			break;
+			if (res != BLK_STS_OK) {
+				/* Got an error */
+				break;
+			}
 		}
+	}
+
+	if (can_merge) {
+		for (int i = 0; i < uio.uio_iovcnt; i++) {
+			printk("%s: vec %d page %p len %d, offset %d\n",
+				__func__, i, uio.uio_bvec[i].bv_page, uio.uio_bvec[i].bv_len, uio.uio_bvec[i].bv_offset);
+		}
+
+		zvol_uio_free(&uio);
 	}
 
 	/* All done */
@@ -169,7 +367,7 @@ static blk_status_t zvol_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 {
 	struct request *rq = bd->rq;
 	zv_work_t *zv_work;
-
+	printk("%s: begin request %p\n", __func__, rq);
 	/*
 	 * Add the request to our workqueue for processing later since we're
 	 * currently in an atomic context and our bio processing code can sleep.
@@ -201,8 +399,8 @@ static int zvol_blk_mq_alloc_tag_set(zvol_state_t *zv)
 
 	/* Initialize tag set. */
 	zso->tag_set.ops = &my_queue_ops;
-	zso->tag_set.nr_hw_queues = zvol_actual_threads;
-	zso->tag_set.queue_depth = zvol_actual_blk_mq_queue_depth;
+	zso->tag_set.nr_hw_queues = 1;
+	zso->tag_set.queue_depth = 100;
 	zso->tag_set.numa_node = NUMA_NO_NODE;
 	zso->tag_set.cmd_size = 0;
 	zso->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
@@ -233,23 +431,21 @@ zvol_is_zvol_impl(const char *path)
 static void
 zvol_write(zv_request_t *zvr)
 {
-	struct bio *bio = zvr->bio;
 	int error = 0;
-	zfs_uio_t uio;
-
-	zfs_uio_bvec_init(&uio, bio);
-
+	zfs_uio_t *uio = zvr->uio;
 	zvol_state_t *zv = zvr->zv;
+	struct bio *bio = uio->bio;
+
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
 	ASSERT3P(zv->zv_zilog, !=, NULL);
 
 	/* bio marked as FLUSH need to flush before write */
-	if (bio_is_flush(bio))
+	if (uio->uio_is_flush)
 		zil_commit(zv->zv_zilog, ZVOL_OBJ);
 
 	/* Some requests are just for flush and nothing else. */
-	if (uio.uio_resid == 0) {
+	if (uio->uio_resid == 0) {
 		rw_exit(&zv->zv_suspend_lock);
 		BIO_END_IO(bio, 0);
 		return;
@@ -265,20 +461,22 @@ zvol_write(zv_request_t *zvr)
 		start_time = blk_generic_start_io_acct(q, disk, WRITE, bio);
 
 	boolean_t sync =
-	    bio_is_fua(bio) || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
+	    uio->uio_is_fua || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
 
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
-	    uio.uio_loffset, uio.uio_resid, RL_WRITER);
+	    uio->uio_loffset, uio->uio_resid, RL_WRITER);
 
 	uint64_t volsize = zv->zv_volsize;
-	while (uio.uio_resid > 0 && uio.uio_loffset < volsize) {
-		uint64_t bytes = MIN(uio.uio_resid, DMU_MAX_ACCESS >> 1);
-		uint64_t off = uio.uio_loffset;
+	while (uio->uio_resid > 0 && uio->uio_loffset < volsize) {
+		/* Write 'bytes' number of bytes at a time */
+		uint64_t bytes = MIN(uio->uio_resid, DMU_MAX_ACCESS >> 1);
+		uint64_t off = uio->uio_loffset;
 		dmu_tx_t *tx = dmu_tx_create(zv->zv_objset);
 
 		if (bytes > volsize - off)	/* don't write past the end */
 			bytes = volsize - off;
 
+		/* Lock our dnode for these bytes */
 		dmu_tx_hold_write_by_dnode(tx, zv->zv_dn, off, bytes);
 
 		/* This will only fail for ENOSPC */
@@ -287,6 +485,8 @@ zvol_write(zv_request_t *zvr)
 			dmu_tx_abort(tx);
 			break;
 		}
+
+		/* Write to our dnode */
 		error = dmu_write_uio_dnode(zv->zv_dn, &uio, bytes, tx);
 		if (error == 0) {
 			zvol_log_write(zv, tx, off, bytes, sync);
@@ -298,7 +498,7 @@ zvol_write(zv_request_t *zvr)
 	}
 	zfs_rangelock_exit(lr);
 
-	int64_t nwritten = start_resid - uio.uio_resid;
+	int64_t nwritten = start_resid - uio->uio_resid;
 	dataset_kstats_update_write_kstats(&zv->zv_kstat, nwritten);
 	task_io_account_write(nwritten);
 
@@ -307,7 +507,7 @@ zvol_write(zv_request_t *zvr)
 
 	rw_exit(&zv->zv_suspend_lock);
 
-	if (acct)
+	if (acct && bio)
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 
 	BIO_END_IO(bio, -error);
@@ -473,7 +673,7 @@ zvol_read_task(void *arg)
  * 		Set to 1 to process the BIO right now.
  */
 static void
-zvol_request_impl(zvol_state_t *zv, struct bio *bio, boolean_t force_sync)
+zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 {
 	fstrans_cookie_t cookie = spl_fstrans_mark();
 	uint64_t offset = BIO_BI_SECTOR(bio) << 9;
@@ -484,7 +684,7 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, boolean_t force_sync)
 		force_sync = 1;
 	}
 
-	if (bio_has_data(bio) && offset + size > zv->zv_volsize) {
+	if (zvol_uio_is_beyond_disk_space(zv, uio)) {
 		printk(KERN_INFO
 		    "%s: bad access: offset=%llu, size=%lu\n",
 		    zv->zv_zso->zvo_disk->disk_name,
@@ -497,7 +697,7 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, boolean_t force_sync)
 
 	zv_request_t zvr = {
 		.zv = zv,
-		.bio = bio,
+		.uio = uio,
 	};
 	zv_request_task_t *task;
 
@@ -606,6 +806,14 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, boolean_t force_sync)
 
 out:
 	spl_fstrans_unmark(cookie);
+}
+
+static void
+zvol_request_impl(zvol_state_t *zv, struct bio *bio, boolean_t force_sync)
+{
+	zfs_uio_t uio;
+	zfs_uio_bvec_init(&uio, bio);
+	zvol_request_uio(zv, &uio, force_sync);
 }
 
 

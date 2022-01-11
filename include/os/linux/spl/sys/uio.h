@@ -53,7 +53,7 @@ typedef enum zfs_uio_seg {
 typedef struct zfs_uio {
 	union {
 		const struct iovec	*uio_iov;
-		const struct bio_vec	*uio_bvec;
+		struct bio_vec		*uio_bvec;
 #if defined(HAVE_VFS_IOV_ITER)
 		struct iov_iter		*uio_iter;
 #endif
@@ -62,10 +62,27 @@ typedef struct zfs_uio {
 	offset_t	uio_loffset;
 	zfs_uio_seg_t	uio_segflg;
 	boolean_t	uio_fault_disable;
-	uint16_t	uio_fmode;
+	uint16_t	uio_fmode;	/* Do we ever use this? */
 	uint16_t	uio_extflg;
-	ssize_t		uio_resid;
+	ssize_t		uio_resid;	/* Total read/write/trim size (bytes) */
 	size_t		uio_skip;
+	boolean_t	uio_has_data;	/* from bio_has_data(bio) */
+	boolean_t	uio_is_flush;	/* from bio_is_flush(bio) */
+	boolean_t	uio_is_fua;	/* from bio_is_fua(bio) */
+
+	boolean_t	uio_merged;
+
+	/*
+	 * A Linux uio is the internal representation of either:
+	 *
+	 * 1) An individual BIO.  'bio' will be non-null.
+	 * 2) A 'struct request' containing one or more BIOs that were able to
+	 *    be merged together into a single uio (since the BIOs in the
+	 *    request represented a contiguous read or write). 'request' will
+	 *    be non-null.
+	 */
+	struct		bio *bio;
+	struct 		request *request;
 } zfs_uio_t;
 
 #define	zfs_uio_segflg(u)		(u)->uio_segflg
@@ -93,20 +110,32 @@ zfs_uio_advance(zfs_uio_t *uio, size_t size)
 	uio->uio_loffset += size;
 }
 
+/*
+ * This should not be called directly - it's a helper for the other
+ * zfs_uio_*_init() functions.
+ */
+static inline void
+zfs_uio_common_init(zfs_uio_t *uio)
+{
+	uio->uio_fmode = 0;
+	uio->uio_extflg = 0;
+	uio->uio_merged = B_FALSE;
+	uio->bio = NULL;
+	uio->request = NULL;
+}
+
 static inline void
 zfs_uio_iovec_init(zfs_uio_t *uio, const struct iovec *iov,
     unsigned long nr_segs, offset_t offset, zfs_uio_seg_t seg, ssize_t resid,
     size_t skip)
 {
 	ASSERT(seg == UIO_USERSPACE || seg == UIO_SYSSPACE);
-
+	zfs_uio_common_init(uio);
 	uio->uio_iov = iov;
 	uio->uio_iovcnt = nr_segs;
 	uio->uio_loffset = offset;
 	uio->uio_segflg = seg;
 	uio->uio_fault_disable = B_FALSE;
-	uio->uio_fmode = 0;
-	uio->uio_extflg = 0;
 	uio->uio_resid = resid;
 	uio->uio_skip = skip;
 }
@@ -114,15 +143,19 @@ zfs_uio_iovec_init(zfs_uio_t *uio, const struct iovec *iov,
 static inline void
 zfs_uio_bvec_init(zfs_uio_t *uio, struct bio *bio)
 {
+	zfs_uio_common_init(uio);
 	uio->uio_bvec = &bio->bi_io_vec[BIO_BI_IDX(bio)];
 	uio->uio_iovcnt = bio->bi_vcnt - BIO_BI_IDX(bio);
+
+	/* Byte offset we are writing to */
 	uio->uio_loffset = BIO_BI_SECTOR(bio) << 9;
 	uio->uio_segflg = UIO_BVEC;
 	uio->uio_fault_disable = B_FALSE;
-	uio->uio_fmode = 0;
-	uio->uio_extflg = 0;
 	uio->uio_resid = BIO_BI_SIZE(bio);
 	uio->uio_skip = BIO_BI_SKIP(bio);
+	uio->uio_has_data = bio_has_data(bio);
+	uio->uio_is_flush = bio_is_flush(bio);
+	uio->bio = bio;
 }
 
 #if defined(HAVE_VFS_IOV_ITER)
@@ -130,13 +163,12 @@ static inline void
 zfs_uio_iov_iter_init(zfs_uio_t *uio, struct iov_iter *iter, offset_t offset,
     ssize_t resid, size_t skip)
 {
+	zfs_uio_common_init(uio);
 	uio->uio_iter = iter;
 	uio->uio_iovcnt = iter->nr_segs;
 	uio->uio_loffset = offset;
 	uio->uio_segflg = UIO_ITER;
 	uio->uio_fault_disable = B_FALSE;
-	uio->uio_fmode = 0;
-	uio->uio_extflg = 0;
 	uio->uio_resid = resid;
 	uio->uio_skip = skip;
 }

@@ -128,7 +128,7 @@ zfs_uiomove_iov(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio)
 static int
 zfs_uiomove_bvec(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio)
 {
-	const struct bio_vec *bv = uio->uio_bvec;
+	struct bio_vec *bv = uio->uio_bvec;
 	size_t skip = uio->uio_skip;
 	ulong_t cnt;
 
