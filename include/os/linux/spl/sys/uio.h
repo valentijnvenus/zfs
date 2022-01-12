@@ -58,6 +58,7 @@ typedef struct zfs_uio {
 		struct iov_iter		*uio_iter;
 #endif
 	};
+
 	int		uio_iovcnt;
 	offset_t	uio_loffset;
 	zfs_uio_seg_t	uio_segflg;
@@ -66,9 +67,12 @@ typedef struct zfs_uio {
 	uint16_t	uio_extflg;
 	ssize_t		uio_resid;	/* Total read/write/trim size (bytes) */
 	size_t		uio_skip;
-	boolean_t	uio_has_data;	/* from bio_has_data(bio) */
-	boolean_t	uio_is_flush;	/* from bio_is_flush(bio) */
-	boolean_t	uio_is_fua;	/* from bio_is_fua(bio) */
+	int		uio_data_dir;		/* from bio_data_dir(bio) */
+	boolean_t	uio_has_data;		/* bio_has_data(bio) */
+	boolean_t	uio_is_flush;		/* bio_is_flush(bio) */
+	boolean_t	uio_is_fua;		/* bio_is_fua(bio) */
+	boolean_t	uio_is_secure_erase;	/* bio_is_secure_erase(bio) */
+	boolean_t	uio_is_discard;		/* bio_is_discard(bio) */
 
 	boolean_t	uio_merged;
 
@@ -83,6 +87,18 @@ typedef struct zfs_uio {
 	 */
 	struct		bio *bio;
 	struct 		request *request;
+
+
+	/*
+	 * In the course of executing the uio, both uio_bvec[] and uio_iovcnt
+	 * get modified.  Keep a copy of them for freeing uio_bvec[] later on
+	 * if uio_bvec[] is dynammically allocated (as is the case for merged
+	 * bios in blk-mq).  Make uio_bvec_copy a void pointer instead of a
+	 * struct bio_vec pointer to avoid issues when with building on an
+	 * older, non-bvec-supporing kernel.
+	 */
+	void	*uio_bvec_copy;
+	int	uio_iovcnt_copy;
 } zfs_uio_t;
 
 #define	zfs_uio_segflg(u)		(u)->uio_segflg
@@ -155,6 +171,11 @@ zfs_uio_bvec_init(zfs_uio_t *uio, struct bio *bio)
 	uio->uio_skip = BIO_BI_SKIP(bio);
 	uio->uio_has_data = bio_has_data(bio);
 	uio->uio_is_flush = bio_is_flush(bio);
+	uio->uio_data_dir = bio_data_dir(bio);
+	uio->uio_is_fua = bio_is_fua(bio);
+	uio->uio_is_discard = bio_is_discard(bio);
+	uio->uio_is_secure_erase = bio_is_secure_erase(bio);
+
 	uio->bio = bio;
 }
 

@@ -1309,6 +1309,8 @@ dmu_write_uio_dnode(dnode_t *dn, zfs_uio_t *uio, uint64_t size, dmu_tx_t *tx)
 		bufoff = zfs_uio_offset(uio) - db->db_offset;
 		tocpy = MIN(db->db_size - bufoff, size);
 
+		printk("%s:	buffer %d: tocopy %lu\n", __func__, i, tocpy);
+
 		ASSERT(i == 0 || i == numbufs-1 || tocpy == db->db_size);
 
 		if (tocpy == db->db_size)

@@ -46,6 +46,10 @@
 static void zvol_request_impl(zvol_state_t *zv, struct bio *bio,
     boolean_t force_sync);
 
+static void zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio,
+    boolean_t force_sync);
+
+
 unsigned int zvol_major = ZVOL_MAJOR;
 unsigned int zvol_request_sync = 0;
 unsigned int zvol_prefetch_bytes = (128 * 1024);
@@ -162,6 +166,10 @@ unsigned int zvol_request_is_mergable(zvol_state_t *zv, struct request *rq)
 	printk("%s: begin, processing request %p, size=%d, segs=%d, op=0x%x\n",
 		__func__, rq,  blk_rq_bytes(rq), rq->nr_phys_segments, req_op(rq));
 
+	if (!rq_mergeable(rq)) {
+		printk("%s: !rq_mergeable\n", __func__);
+	}
+
 	/* Iterate through the BIOs */
 	__rq_for_each_bio(bio, rq) {
 		printk("%s:	looking at bio page=%p, len=%d offset=%d\n",
@@ -207,7 +215,15 @@ unsigned int zvol_request_is_mergable(zvol_state_t *zv, struct request *rq)
 static void
 zvol_uio_free(zfs_uio_t *uio)
 {
-	kmem_free(uio->uio_bvec, sizeof (*uio->uio_bvec) * uio->uio_iovcnt);
+	/*
+	 * We use uio_bvec_copy/uio_iovcnt_copy here instead of
+	 * uio_bvec/uio_iovcnt since the latter get modified during uio
+	 * execution.
+	 */
+	if (uio->uio_bvec_copy) {
+		kmem_free(uio->uio_bvec_copy, sizeof (*uio->uio_bvec) * uio->uio_iovcnt_copy);
+		printk("%s: freeing %lu uio bytes", __func__, sizeof (*uio->uio_bvec) * uio->uio_iovcnt_copy);
+	}
 }
 
 /*
@@ -226,6 +242,8 @@ int zvol_request_to_merged_uio(zvol_state_t *zv, struct request *rq, zfs_uio_t *
 	struct bio_vec tmp_bvec = {0};	/* uninitialized warnings */
 	struct req_iterator rq_iter;
 	unsigned int i;
+	enum req_opf op;
+
 	printk("%s: begin request %p\n", __func__, rq);
 
 	/*
@@ -268,17 +286,36 @@ int zvol_request_to_merged_uio(zvol_state_t *zv, struct request *rq, zfs_uio_t *
 		i++;
 	}
 
+	uio->uio_iovcnt = bvec_count;
+
+	/*
+	 * During the course of executing the uio, both 'uio_bvec[]' and
+	 *'uio_iovcnt' are modified in zfs_uiomove_bvec().  We need to make
+	 * a copy of them so that we can free() uio_bvec[] after the uio is
+	 * done.
+	 */
+	uio->uio_bvec_copy = uio->uio_bvec;
+	uio->uio_iovcnt_copy = uio->uio_iovcnt;
+ 
 	/*
 	 * We know this is 0 form our earlier checks in
 	 * zvol_request_is_mergable().
 	 */
 	uio->uio_skip = 0;
 
+	op = req_op(rq);
+
 	uio->uio_segflg = UIO_BVEC;
 	uio->uio_fault_disable = B_FALSE;
-	uio->uio_iovcnt = bvec_count;
-	uio->uio_is_flush = 0;
+
 	uio->uio_has_data = 1;
+
+	uio->uio_is_fua = 0;
+	uio->uio_data_dir = op_is_write(op) ? WRITE : READ;
+
+	uio->uio_is_flush = op == REQ_OP_FLUSH ? 1 : 0;
+	uio->uio_is_secure_erase = op == REQ_OP_SECURE_ERASE ? 1 : 0;
+	uio->uio_is_discard = op == REQ_OP_DISCARD ? 1 : 0;
 
 	return 0;
 }
@@ -322,7 +359,12 @@ static void zvol_mq_work_func(struct work_struct *work)
 	}
 
 	if (can_merge) {
-		zvol_request_uio(zv, &uio);
+		for (int i = 0; i < uio.uio_iovcnt; i++) {
+			printk("%s: vec %d page %p len %d, offset %d\n",
+				__func__, i, uio.uio_bvec[i].bv_page, uio.uio_bvec[i].bv_len, uio.uio_bvec[i].bv_offset);
+		}
+		printk("%s: doing the uio\n", __func__);
+		zvol_request_uio(zv, &uio, 1);
 	} else {
 		/* Execute the BIOs in this request. */
 
@@ -342,20 +384,22 @@ static void zvol_mq_work_func(struct work_struct *work)
 		}
 	}
 
+	printk("%s: freeing the uio\n", __func__);
 	if (can_merge) {
-		for (int i = 0; i < uio.uio_iovcnt; i++) {
-			printk("%s: vec %d page %p len %d, offset %d\n",
-				__func__, i, uio.uio_bvec[i].bv_page, uio.uio_bvec[i].bv_len, uio.uio_bvec[i].bv_offset);
-		}
-
 		zvol_uio_free(&uio);
 	}
+
+	printk("%s: finalizing the request\n", __func__);
 
 	/* All done */
 	blk_mq_end_request(rq, res);
 
+	printk("%s: freeing the cache\n", __func__);
+
 out:
 	kmem_cache_free(blk_mq_cache, zv_work);
+	printk("%s: freed\n", __func__);
+
 }
 
 /*
@@ -435,6 +479,7 @@ zvol_write(zv_request_t *zvr)
 	zfs_uio_t *uio = zvr->uio;
 	zvol_state_t *zv = zvr->zv;
 	struct bio *bio = uio->bio;
+	printk("%s:	begin, bio %p\n", __func__, bio);
 
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
@@ -447,21 +492,24 @@ zvol_write(zv_request_t *zvr)
 	/* Some requests are just for flush and nothing else. */
 	if (uio->uio_resid == 0) {
 		rw_exit(&zv->zv_suspend_lock);
-		BIO_END_IO(bio, 0);
+		if (bio)
+			BIO_END_IO(bio, 0);
 		return;
 	}
 
 	struct request_queue *q = zv->zv_zso->zvo_queue;
 	struct gendisk *disk = zv->zv_zso->zvo_disk;
-	ssize_t start_resid = uio.uio_resid;
+	ssize_t start_resid = uio->uio_resid;
 	unsigned long start_time;
 
 	boolean_t acct = blk_queue_io_stat(q);
-	if (acct)
+	if (acct && bio)
 		start_time = blk_generic_start_io_acct(q, disk, WRITE, bio);
 
 	boolean_t sync =
 	    uio->uio_is_fua || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
+
+	printk("%s:	rangelocking %lu:%lu\n", __func__, uio->uio_loffset, uio->uio_resid);
 
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
 	    uio->uio_loffset, uio->uio_resid, RL_WRITER);
@@ -476,6 +524,7 @@ zvol_write(zv_request_t *zvr)
 		if (bytes > volsize - off)	/* don't write past the end */
 			bytes = volsize - off;
 
+		printk("%s:     locking dnode %lu:%lu\n", __func__, off, bytes);
 		/* Lock our dnode for these bytes */
 		dmu_tx_hold_write_by_dnode(tx, zv->zv_dn, off, bytes);
 
@@ -485,9 +534,10 @@ zvol_write(zv_request_t *zvr)
 			dmu_tx_abort(tx);
 			break;
 		}
+		printk("%s:     writing dnode\n", __func__);
 
 		/* Write to our dnode */
-		error = dmu_write_uio_dnode(zv->zv_dn, &uio, bytes, tx);
+		error = dmu_write_uio_dnode(zv->zv_dn, uio, bytes, tx);
 		if (error == 0) {
 			zvol_log_write(zv, tx, off, bytes, sync);
 		}
@@ -497,7 +547,7 @@ zvol_write(zv_request_t *zvr)
 			break;
 	}
 	zfs_rangelock_exit(lr);
-
+	printk("%s:	out of loop\n", __func__);
 	int64_t nwritten = start_resid - uio->uio_resid;
 	dataset_kstats_update_write_kstats(&zv->zv_kstat, nwritten);
 	task_io_account_write(nwritten);
@@ -510,7 +560,10 @@ zvol_write(zv_request_t *zvr)
 	if (acct && bio)
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 
-	BIO_END_IO(bio, -error);
+	if (bio)
+		BIO_END_IO(bio, -error);
+	printk("%s:	done\n", __func__);
+
 }
 
 static void
@@ -524,7 +577,8 @@ zvol_write_task(void *arg)
 static void
 zvol_discard(zv_request_t *zvr)
 {
-	struct bio *bio = zvr->bio;
+	zfs_uio_t *uio = zvr->uio;
+	struct bio *bio = uio->bio;
 	zvol_state_t *zv = zvr->zv;
 	uint64_t start = BIO_BI_SECTOR(bio) << 9;
 	uint64_t size = BIO_BI_SIZE(bio);
@@ -542,10 +596,10 @@ zvol_discard(zv_request_t *zvr)
 	unsigned long start_time;
 
 	boolean_t acct = blk_queue_io_stat(q);
-	if (acct)
+	if (acct && bio)
 		start_time = blk_generic_start_io_acct(q, disk, WRITE, bio);
 
-	sync = bio_is_fua(bio) || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
+	sync = uio->uio_is_fua || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
 
 	if (end > zv->zv_volsize) {
 		error = SET_ERROR(EIO);
@@ -558,7 +612,7 @@ zvol_discard(zv_request_t *zvr)
 	 * the unaligned parts which is slow (read-modify-write) and useless
 	 * since we are not freeing any space by doing so.
 	 */
-	if (!bio_is_secure_erase(bio)) {
+	if (!uio->uio_is_secure_erase) {
 		start = P2ROUNDUP(start, zv->zv_volblocksize);
 		end = P2ALIGN(end, zv->zv_volblocksize);
 		size = end - start;
@@ -589,10 +643,11 @@ zvol_discard(zv_request_t *zvr)
 unlock:
 	rw_exit(&zv->zv_suspend_lock);
 
-	if (acct)
+	if (acct && bio)
 		blk_generic_end_io_acct(q, disk, WRITE, bio, start_time);
 
-	BIO_END_IO(bio, -error);
+	if (bio)
+		BIO_END_IO(bio, -error);
 }
 
 static void
@@ -606,37 +661,35 @@ zvol_discard_task(void *arg)
 static void
 zvol_read(zv_request_t *zvr)
 {
-	struct bio *bio = zvr->bio;
+	zfs_uio_t *uio = zvr->uio;
+	struct bio *bio = uio->bio;
 	int error = 0;
-	zfs_uio_t uio;
-
-	zfs_uio_bvec_init(&uio, bio);
-
 	zvol_state_t *zv = zvr->zv;
+
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
 
 	struct request_queue *q = zv->zv_zso->zvo_queue;
 	struct gendisk *disk = zv->zv_zso->zvo_disk;
-	ssize_t start_resid = uio.uio_resid;
+	ssize_t start_resid = uio->uio_resid;
 	unsigned long start_time;
 
 	boolean_t acct = blk_queue_io_stat(q);
-	if (acct)
+	if (acct && bio)
 		start_time = blk_generic_start_io_acct(q, disk, READ, bio);
 
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
-	    uio.uio_loffset, uio.uio_resid, RL_READER);
+	    uio->uio_loffset, uio->uio_resid, RL_READER);
 
 	uint64_t volsize = zv->zv_volsize;
-	while (uio.uio_resid > 0 && uio.uio_loffset < volsize) {
-		uint64_t bytes = MIN(uio.uio_resid, DMU_MAX_ACCESS >> 1);
+	while (uio->uio_resid > 0 && uio->uio_loffset < volsize) {
+		uint64_t bytes = MIN(uio->uio_resid, DMU_MAX_ACCESS >> 1);
 
 		/* don't read past the end */
-		if (bytes > volsize - uio.uio_loffset)
-			bytes = volsize - uio.uio_loffset;
+		if (bytes > volsize - uio->uio_loffset)
+			bytes = volsize - uio->uio_loffset;
 
-		error = dmu_read_uio_dnode(zv->zv_dn, &uio, bytes);
+		error = dmu_read_uio_dnode(zv->zv_dn, uio, bytes);
 		if (error) {
 			/* convert checksum errors into IO errors */
 			if (error == ECKSUM)
@@ -646,16 +699,17 @@ zvol_read(zv_request_t *zvr)
 	}
 	zfs_rangelock_exit(lr);
 
-	int64_t nread = start_resid - uio.uio_resid;
+	int64_t nread = start_resid - uio->uio_resid;
 	dataset_kstats_update_read_kstats(&zv->zv_kstat, nread);
 	task_io_account_read(nread);
 
 	rw_exit(&zv->zv_suspend_lock);
 
-	if (acct)
+	if (acct && bio)
 		blk_generic_end_io_acct(q, disk, READ, bio, start_time);
 
-	BIO_END_IO(bio, -error);
+	if (bio)
+		BIO_END_IO(bio, -error);
 }
 
 static void
@@ -676,9 +730,11 @@ static void
 zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 {
 	fstrans_cookie_t cookie = spl_fstrans_mark();
-	uint64_t offset = BIO_BI_SECTOR(bio) << 9;
-	uint64_t size = BIO_BI_SIZE(bio);
-	int rw = bio_data_dir(bio);
+	uint64_t offset = uio->uio_loffset;
+	uint64_t size = uio->uio_resid;
+	int rw = uio->uio_data_dir;
+	struct bio *bio = uio->bio;
+	printk("%s: begin zvol_request_uio\n", __func__);
 
 	if (zvol_request_sync) {
 		force_sync = 1;
@@ -690,8 +746,8 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 		    zv->zv_zso->zvo_disk->disk_name,
 		    (long long unsigned)offset,
 		    (long unsigned)size);
-
-		BIO_END_IO(bio, -SET_ERROR(EIO));
+		if (bio)
+			BIO_END_IO(bio, -SET_ERROR(EIO));
 		goto out;
 	}
 
@@ -700,13 +756,18 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 		.uio = uio,
 	};
 	zv_request_task_t *task;
+	printk("%s: checking data dir %s, bio=%p\n", __func__, rw == WRITE ? "WRITE" : "READ", bio);
 
 	if (rw == WRITE) {
 		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
-			BIO_END_IO(bio, -SET_ERROR(EROFS));
+
+
+			if (bio)
+				BIO_END_IO(bio, -SET_ERROR(EROFS));
+
 			goto out;
 		}
-
+		printk("%s:	in write codepath\n", __func__);
 		/*
 		 * Prevents the zvol from being suspended, or the ZIL being
 		 * concurrently opened.  Will be released after the i/o
@@ -764,7 +825,7 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 		 * interfaces lack this functionality (they block waiting for
 		 * the i/o to complete).
 		 */
-		if (bio_is_discard(bio) || bio_is_secure_erase(bio)) {
+		if (uio->uio_is_discard || uio->uio_is_secure_erase) {
 			if (force_sync) {
 				zvol_discard(&zvr);
 			} else {
@@ -774,6 +835,8 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 			}
 		} else {
 			if (force_sync) {
+				printk("%s:	calling zvol_write\n", __func__);
+
 				zvol_write(&zvr);
 			} else {
 				task = zv_request_task_create(zvr);
@@ -788,7 +851,9 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 		 * data and require no additional handling.
 		 */
 		if (size == 0) {
-			BIO_END_IO(bio, 0);
+			if (bio)
+				BIO_END_IO(bio, 0);
+
 			goto out;
 		}
 
@@ -806,6 +871,7 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 
 out:
 	spl_fstrans_unmark(cookie);
+	printk("%s: exiting uio\n", __func__);
 }
 
 static void
@@ -1303,7 +1369,7 @@ zvol_alloc(dev_t dev, const char *name)
 	blk_queue_set_read_ahead(zso->zvo_queue, 1);
 
 	/* Disable write merging in favor of the ZIO pipeline. */
-	blk_queue_flag_set(QUEUE_FLAG_NOMERGES, zso->zvo_queue);
+//	blk_queue_flag_set(QUEUE_FLAG_NOMERGES, zso->zvo_queue);
 
 	/* Enable /proc/diskstats */
 	blk_queue_flag_set(QUEUE_FLAG_IO_STAT, zso->zvo_queue);
