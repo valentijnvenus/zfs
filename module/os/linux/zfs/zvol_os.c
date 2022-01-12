@@ -134,9 +134,9 @@ zvol_bio_is_mergable(zvol_state_t *zv, struct bio *bio)
 	 *
 	 * If the answer is yes to any of these, then the bio is not mergable.
 	 */
-	printk("%s:		op %x, has_data %d, is_flush %d, is_fua %d, is_discard %d, is_secure %d,  skip %d",
-		__func__, bio_op(bio), bio_has_data(bio), bio_is_flush(bio), bio_is_fua(bio), bio_is_discard(bio), bio_is_secure_erase(bio),
-		BIO_BI_SKIP(bio));
+//	printk("%s:		op %x, has_data %d, is_flush %d, is_fua %d, is_discard %d, is_secure %d,  skip %d",
+//		__func__, bio_op(bio), bio_has_data(bio), bio_is_flush(bio), bio_is_fua(bio), bio_is_discard(bio), bio_is_secure_erase(bio),
+//		BIO_BI_SKIP(bio));
 	return (bio_has_data(bio) &&
 		!bio_is_flush(bio) &&
 		!bio_is_fua(bio) &&
@@ -163,20 +163,15 @@ unsigned int zvol_request_is_mergable(zvol_state_t *zv, struct request *rq)
 	struct bio *bio = NULL;
 	sector_t next_start_sector = 0;
 	unsigned int count = 0;
-	printk("%s: begin, processing request %p, size=%d, segs=%d, op=0x%x\n",
-		__func__, rq,  blk_rq_bytes(rq), rq->nr_phys_segments, req_op(rq));
 
-	if (!rq_mergeable(rq)) {
-		printk("%s: !rq_mergeable\n", __func__);
-	}
+//	if (!rq_mergeable(rq)) {
+//		printk("%s: !rq_mergeable\n", __func__);
+//	}
 
 	/* Iterate through the BIOs */
 	__rq_for_each_bio(bio, rq) {
-		printk("%s:	looking at bio page=%p, len=%d offset=%d\n",
-			__func__, bio->bi_io_vec->bv_page, bio->bi_io_vec->bv_len, bio->bi_io_vec->bv_offset);
 		if (!zvol_bio_is_mergable(zv, bio)) {
 			/* Can't merge it */
-			printk("%s:	bio isn't mergable\n", __func__);
 			count = 0;
 			break;
 		}
@@ -186,9 +181,6 @@ unsigned int zvol_request_is_mergable(zvol_state_t *zv, struct request *rq)
 			// TODO: make sure next_start_sector doesnt wrap around
 
 			if (next_start_sector != BIO_BI_SECTOR(bio)) {
-				printk("%s:	not contig %lu %lu\n",
-					__func__, (unsigned long) next_start_sector + 1, (unsigned long) BIO_BI_SECTOR(bio));
-
 				/* Not contiguous */
 				count = 0;
 				break;
@@ -198,12 +190,9 @@ unsigned int zvol_request_is_mergable(zvol_state_t *zv, struct request *rq)
 		/* Record the last sector for this bio */
 		
 		next_start_sector = bio_end_sector(bio); /* If you write 4k, (512B secotors), bio_end_sector(bio) == 8, not 7 */
-		printk("%s:	mergable! %lu + %lu = %lu (end sector %lu)\n", __func__,
-			(unsigned long) BIO_BI_SECTOR(bio), (unsigned long) BIO_BI_SIZE(bio), (unsigned long) next_start_sector, (unsigned long) bio_end_sector(bio));
 		count++;
 	}
 
-	printk("%s: done with request %p\n", __func__, rq);
 	return count;
 }
 
@@ -219,10 +208,12 @@ zvol_uio_free(zfs_uio_t *uio)
 	 * We use uio_bvec_copy/uio_iovcnt_copy here instead of
 	 * uio_bvec/uio_iovcnt since the latter get modified during uio
 	 * execution.
+	 *
+	 * NOTE: We are careful to free 'uio_bvec_copy', but use sizeof *uio_bvec
+	 * since uio_bvec_copy is a void pointer, not a bvec pointer.
 	 */
 	if (uio->uio_bvec_copy) {
 		kmem_free(uio->uio_bvec_copy, sizeof (*uio->uio_bvec) * uio->uio_iovcnt_copy);
-		printk("%s: freeing %lu uio bytes", __func__, sizeof (*uio->uio_bvec) * uio->uio_iovcnt_copy);
 	}
 }
 
@@ -243,8 +234,6 @@ int zvol_request_to_merged_uio(zvol_state_t *zv, struct request *rq, zfs_uio_t *
 	struct req_iterator rq_iter;
 	unsigned int i;
 	enum req_opf op;
-
-	printk("%s: begin request %p\n", __func__, rq);
 
 	/*
 	 * Can ALL the BIOs in this request be merged into one contiguous
@@ -338,7 +327,6 @@ static void zvol_mq_work_func(struct work_struct *work)
 	zv_work = container_of(work, zv_work_t, work);
 	rq = zv_work->rq;
 	zv = rq->q->queuedata;
-	printk("%s: work begin %p\n", __func__, rq);
 
 	/* Tell the kernel that we are starting to process this request */
 	blk_mq_start_request(rq);
@@ -359,11 +347,6 @@ static void zvol_mq_work_func(struct work_struct *work)
 	}
 
 	if (can_merge) {
-		for (int i = 0; i < uio.uio_iovcnt; i++) {
-			printk("%s: vec %d page %p len %d, offset %d\n",
-				__func__, i, uio.uio_bvec[i].bv_page, uio.uio_bvec[i].bv_len, uio.uio_bvec[i].bv_offset);
-		}
-		printk("%s: doing the uio\n", __func__);
 		zvol_request_uio(zv, &uio, 1);
 	} else {
 		/* Execute the BIOs in this request. */
@@ -384,22 +367,15 @@ static void zvol_mq_work_func(struct work_struct *work)
 		}
 	}
 
-	printk("%s: freeing the uio\n", __func__);
 	if (can_merge) {
 		zvol_uio_free(&uio);
 	}
 
-	printk("%s: finalizing the request\n", __func__);
-
 	/* All done */
 	blk_mq_end_request(rq, res);
 
-	printk("%s: freeing the cache\n", __func__);
-
 out:
 	kmem_cache_free(blk_mq_cache, zv_work);
-	printk("%s: freed\n", __func__);
-
 }
 
 /*
@@ -411,7 +387,6 @@ static blk_status_t zvol_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 {
 	struct request *rq = bd->rq;
 	zv_work_t *zv_work;
-	printk("%s: begin request %p\n", __func__, rq);
 	/*
 	 * Add the request to our workqueue for processing later since we're
 	 * currently in an atomic context and our bio processing code can sleep.
@@ -479,7 +454,6 @@ zvol_write(zv_request_t *zvr)
 	zfs_uio_t *uio = zvr->uio;
 	zvol_state_t *zv = zvr->zv;
 	struct bio *bio = uio->bio;
-	printk("%s:	begin, bio %p\n", __func__, bio);
 
 	ASSERT3P(zv, !=, NULL);
 	ASSERT3U(zv->zv_open_count, >, 0);
@@ -509,8 +483,6 @@ zvol_write(zv_request_t *zvr)
 	boolean_t sync =
 	    uio->uio_is_fua || zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS;
 
-	printk("%s:	rangelocking %lu:%lu\n", __func__, uio->uio_loffset, uio->uio_resid);
-
 	zfs_locked_range_t *lr = zfs_rangelock_enter(&zv->zv_rangelock,
 	    uio->uio_loffset, uio->uio_resid, RL_WRITER);
 
@@ -524,7 +496,6 @@ zvol_write(zv_request_t *zvr)
 		if (bytes > volsize - off)	/* don't write past the end */
 			bytes = volsize - off;
 
-		printk("%s:     locking dnode %lu:%lu\n", __func__, off, bytes);
 		/* Lock our dnode for these bytes */
 		dmu_tx_hold_write_by_dnode(tx, zv->zv_dn, off, bytes);
 
@@ -534,7 +505,6 @@ zvol_write(zv_request_t *zvr)
 			dmu_tx_abort(tx);
 			break;
 		}
-		printk("%s:     writing dnode\n", __func__);
 
 		/* Write to our dnode */
 		error = dmu_write_uio_dnode(zv->zv_dn, uio, bytes, tx);
@@ -547,7 +517,6 @@ zvol_write(zv_request_t *zvr)
 			break;
 	}
 	zfs_rangelock_exit(lr);
-	printk("%s:	out of loop\n", __func__);
 	int64_t nwritten = start_resid - uio->uio_resid;
 	dataset_kstats_update_write_kstats(&zv->zv_kstat, nwritten);
 	task_io_account_write(nwritten);
@@ -562,8 +531,6 @@ zvol_write(zv_request_t *zvr)
 
 	if (bio)
 		BIO_END_IO(bio, -error);
-	printk("%s:	done\n", __func__);
-
 }
 
 static void
@@ -734,7 +701,6 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 	uint64_t size = uio->uio_resid;
 	int rw = uio->uio_data_dir;
 	struct bio *bio = uio->bio;
-	printk("%s: begin zvol_request_uio\n", __func__);
 
 	if (zvol_request_sync) {
 		force_sync = 1;
@@ -756,7 +722,6 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 		.uio = uio,
 	};
 	zv_request_task_t *task;
-	printk("%s: checking data dir %s, bio=%p\n", __func__, rw == WRITE ? "WRITE" : "READ", bio);
 
 	if (rw == WRITE) {
 		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
@@ -767,7 +732,7 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 
 			goto out;
 		}
-		printk("%s:	in write codepath\n", __func__);
+
 		/*
 		 * Prevents the zvol from being suspended, or the ZIL being
 		 * concurrently opened.  Will be released after the i/o
@@ -835,8 +800,6 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 			}
 		} else {
 			if (force_sync) {
-				printk("%s:	calling zvol_write\n", __func__);
-
 				zvol_write(&zvr);
 			} else {
 				task = zv_request_task_create(zvr);
@@ -871,7 +834,6 @@ zvol_request_uio(zvol_state_t *zv, zfs_uio_t *uio, boolean_t force_sync)
 
 out:
 	spl_fstrans_unmark(cookie);
-	printk("%s: exiting uio\n", __func__);
 }
 
 static void
