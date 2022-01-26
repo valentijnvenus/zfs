@@ -2218,6 +2218,18 @@ This parameter will only appear if your kernel supports
 .Li blk-mq
 and is only read and assigned to a zvol at zvol load time.
 .
+.It Sy zvol_blk_mq_blocks_per_thread Ns = Ns Sy 8 Pq uint
+If
+.Sy zvol_use_blk_mq
+is enabled, then process this number of volblocksize blocks per zvol thread.
+This tunable can be use to favor better performance for zvol reads (lower
+values) or writes (higher values).
+If set to 0, then the zvol layer will process the maximum number of blocks
+per thread that it can.
+This parameter will only appear if your kernel supports
+.Li blk-mq
+and is only read and assigned to a zvol at zvol load time.
+.
 .It Sy zvol_blk_mq_queue_depth Ns = Ns Sy 0 Pq uint
 The queue_depth value for the zvol
 .Li blk-mq

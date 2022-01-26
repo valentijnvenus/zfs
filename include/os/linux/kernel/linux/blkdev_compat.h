@@ -34,6 +34,7 @@
 #include <linux/hdreg.h>
 #include <linux/major.h>
 #include <linux/msdos_fs.h>	/* for SECTOR_* */
+#include <linux/bio.h>
 
 #ifndef HAVE_BLK_QUEUE_FLAG_SET
 static inline void
@@ -579,4 +580,89 @@ blk_generic_alloc_queue(make_request_fn make_request, int node_id)
 }
 #endif /* !HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS */
 
+static inline int
+io_data_dir(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (bio_data_dir(bio));
+	} else {
+		enum req_opf op = req_op(rq);
+		if (op_is_write(op)) {
+			return (WRITE);
+		} else {
+			return (READ);
+		}
+	}
+}
+
+static inline int
+io_is_flush(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (bio_is_flush(bio));
+	} else {
+		return (req_op(rq) == REQ_OP_FLUSH);
+	}
+}
+
+static inline int
+io_is_discard(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (bio_is_discard(bio));
+	} else {
+		return (req_op(rq) == REQ_OP_DISCARD);
+	}
+}
+
+static inline int
+io_is_secure_erase(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (bio_is_secure_erase(bio));
+	} else {
+		return (req_op(rq) == REQ_OP_SECURE_ERASE);
+	}
+}
+
+static inline int
+io_is_fua(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (bio_is_fua(bio));
+	} else {
+		return (rq->cmd_flags & REQ_FUA);
+	}
+}
+
+
+static inline uint64_t
+io_offset(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (BIO_BI_SECTOR(bio) << 9);
+	} else {
+		return (blk_rq_pos(rq) << 9);
+	}
+}
+
+static inline uint64_t
+io_size(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (BIO_BI_SIZE(bio));
+	} else {
+		return (blk_rq_bytes(rq));
+	}
+}
+
+static inline int
+io_has_data(struct bio *bio, struct request *rq)
+{
+	if (bio) {
+		return (bio_has_data(bio));
+	} else {
+		return (bio_has_data(rq->bio));
+	}
+}
 #endif /* _ZFS_BLKDEV_H */
