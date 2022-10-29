@@ -61,7 +61,7 @@ static unsigned int zvol_threads = 0;
 #ifdef HAVE_BLK_MQ
 static unsigned int zvol_blk_mq_threads = 0;
 static unsigned int zvol_blk_mq_actual_threads;
-static boolean_t zvol_use_blk_mq = B_FALSE;
+static boolean_t zvol_use_blk_mq = B_TRUE;
 
 /*
  * The maximum number of volblocksize blocks to process per thread.  Typically,
