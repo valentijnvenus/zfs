@@ -208,7 +208,7 @@ zpl_snapdir_revalidate(struct dentry *dentry, unsigned int flags)
 	return (!!dentry->d_inode);
 }
 
-static const dentry_operations_t zpl_dops_snapdirs = {
+static dentry_operations_t zpl_dops_snapdirs = {
 /*
  * Auto mounting of snapshots is only supported for 2.6.37 and
  * newer kernels.  Prior to this kernel the ops->follow_link()
@@ -371,7 +371,11 @@ zpl_snapdir_mkdir(struct inode *dip, struct dentry *dentry, umode_t mode)
 
 	crhold(cr);
 	vap = kmem_zalloc(sizeof (vattr_t), KM_SLEEP);
-	zpl_vap_init(vap, dip, mode | S_IFDIR, cr);
+#ifdef HAVE_IOPS_MKDIR_USERNS
+	zpl_vap_init(vap, dip, mode | S_IFDIR, cr, user_ns);
+#else
+	zpl_vap_init(vap, dip, mode | S_IFDIR, cr, NULL);
+#endif
 
 	error = -zfsctl_snapdir_mkdir(dip, dname(dentry), vap, &ip, cr, 0);
 	if (error == 0) {

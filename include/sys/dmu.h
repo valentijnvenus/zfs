@@ -27,6 +27,7 @@
  * Copyright (c) 2014 Spectra Logic Corporation, All rights reserved.
  * Copyright 2013 Saso Kiselkov. All rights reserved.
  * Copyright (c) 2017, Intel Corporation.
+ * Copyright (c) 2022 Hewlett Packard Enterprise Development LP.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -141,6 +142,12 @@ typedef enum dmu_object_byteswap {
 
 #define	DMU_OT_IS_DDT(ot) \
 	((ot) == DMU_OT_DDT_ZAP)
+
+#define	DMU_OT_IS_CRITICAL(ot) \
+	(DMU_OT_IS_METADATA(ot) && \
+	(ot) != DMU_OT_DNODE && \
+	(ot) != DMU_OT_DIRECTORY_CONTENTS && \
+	(ot) != DMU_OT_SA)
 
 /* Note: ztest uses DMU_OT_UINT64_OTHER as a proxy for file blocks */
 #define	DMU_OT_IS_FILE(ot) \
@@ -865,7 +872,7 @@ int dmu_assign_arcbuf_by_dnode(dnode_t *dn, uint64_t offset,
 int dmu_assign_arcbuf_by_dbuf(dmu_buf_t *handle, uint64_t offset,
     struct arc_buf *buf, dmu_tx_t *tx);
 #define	dmu_assign_arcbuf	dmu_assign_arcbuf_by_dbuf
-extern int zfs_max_recordsize;
+extern uint_t zfs_max_recordsize;
 
 /*
  * Asynchronously try to read in the data.
@@ -907,7 +914,7 @@ typedef const struct dmu_object_byteswap_info {
 } dmu_object_byteswap_info_t;
 
 extern const dmu_object_type_info_t dmu_ot[DMU_OT_NUMTYPES];
-extern const dmu_object_byteswap_info_t dmu_ot_byteswap[DMU_BSWAP_NUMFUNCS];
+extern dmu_object_byteswap_info_t dmu_ot_byteswap[DMU_BSWAP_NUMFUNCS];
 
 /*
  * Get information on a DMU object.
@@ -1070,7 +1077,7 @@ int dmu_diff(const char *tosnap_name, const char *fromsnap_name,
 #define	ZFS_CRC64_POLY	0xC96C5795D7870F42ULL	/* ECMA-182, reflected form */
 extern uint64_t zfs_crc64_table[256];
 
-extern int dmu_prefetch_max;
+extern uint_t dmu_prefetch_max;
 
 #ifdef	__cplusplus
 }

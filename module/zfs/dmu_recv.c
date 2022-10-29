@@ -67,9 +67,9 @@
 #endif
 #include <sys/zfs_file.h>
 
-static int zfs_recv_queue_length = SPA_MAXBLOCKSIZE;
-static int zfs_recv_queue_ff = 20;
-static int zfs_recv_write_batch_size = 1024 * 1024;
+static uint_t zfs_recv_queue_length = SPA_MAXBLOCKSIZE;
+static uint_t zfs_recv_queue_ff = 20;
+static uint_t zfs_recv_write_batch_size = 1024 * 1024;
 static int zfs_recv_best_effort_corrective = 0;
 
 static const void *const dmu_recv_tag = "dmu_recv_tag";
@@ -1045,11 +1045,22 @@ dmu_recv_resume_begin_check(void *arg, dmu_tx_t *tx)
 		dsflags |= DS_HOLD_FLAG_DECRYPT;
 	}
 
+	boolean_t recvexist = B_TRUE;
 	if (dsl_dataset_hold_flags(dp, recvname, dsflags, FTAG, &ds) != 0) {
 		/* %recv does not exist; continue in tofs */
+		recvexist = B_FALSE;
 		error = dsl_dataset_hold_flags(dp, tofs, dsflags, FTAG, &ds);
 		if (error != 0)
 			return (error);
+	}
+
+	/*
+	 * Resume of full/newfs recv on existing dataset should be done with
+	 * force flag
+	 */
+	if (recvexist && drrb->drr_fromguid == 0 && !drc->drc_force) {
+		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+		return (SET_ERROR(ZFS_ERR_RESUME_EXISTS));
 	}
 
 	/* check that ds is marked inconsistent */
@@ -1333,7 +1344,7 @@ do_corrective_recv(struct receive_writer_arg *rwa, struct drr_write *drrw,
 	dnode_t *dn;
 	abd_t *abd = rrd->abd;
 	zio_cksum_t bp_cksum = bp->blk_cksum;
-	enum zio_flag flags = ZIO_FLAG_SPECULATIVE |
+	zio_flag_t flags = ZIO_FLAG_SPECULATIVE |
 	    ZIO_FLAG_DONT_CACHE | ZIO_FLAG_DONT_RETRY | ZIO_FLAG_CANFAIL;
 
 	if (rwa->raw)
@@ -2175,7 +2186,7 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 			zio_prop_t zp;
 			dmu_write_policy(rwa->os, dn, 0, 0, &zp);
 
-			enum zio_flag zio_flags = 0;
+			zio_flag_t zio_flags = 0;
 
 			if (rwa->raw) {
 				zp.zp_encrypt = B_TRUE;
@@ -3718,13 +3729,13 @@ dmu_objset_is_receiving(objset_t *os)
 	    os->os_dsl_dataset->ds_owner == dmu_recv_tag);
 }
 
-ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, queue_length, INT, ZMOD_RW,
+ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, queue_length, UINT, ZMOD_RW,
 	"Maximum receive queue length");
 
-ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, queue_ff, INT, ZMOD_RW,
+ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, queue_ff, UINT, ZMOD_RW,
 	"Receive queue fill fraction");
 
-ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, write_batch_size, INT, ZMOD_RW,
+ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, write_batch_size, UINT, ZMOD_RW,
 	"Maximum amount of writes to batch into one transaction");
 
 ZFS_MODULE_PARAM(zfs_recv, zfs_recv_, best_effort_corrective, INT, ZMOD_RW,
