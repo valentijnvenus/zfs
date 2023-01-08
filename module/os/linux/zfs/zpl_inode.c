@@ -118,16 +118,16 @@ zpl_vap_init(vattr_t *vap, struct inode *dir, umode_t mode, cred_t *cr,
 	vap->va_mask = ATTR_MODE;
 	vap->va_mode = mode;
 
-	vap->va_uid = zfs_uid_from_mnt((struct user_namespace *)mnt_ns,
-	    crgetuid(cr));
+	vap->va_uid = zfs_vfsuid_to_uid((struct user_namespace *)mnt_ns,
+	    zfs_i_user_ns(dir), crgetuid(cr));
 
-	if (dir && dir->i_mode & S_ISGID) {
+	if (dir->i_mode & S_ISGID) {
 		vap->va_gid = KGID_TO_SGID(dir->i_gid);
 		if (S_ISDIR(mode))
 			vap->va_mode |= S_ISGID;
 	} else {
-		vap->va_gid = zfs_gid_from_mnt((struct user_namespace *)mnt_ns,
-		    crgetgid(cr));
+		vap->va_gid = zfs_vfsgid_to_gid((struct user_namespace *)mnt_ns,
+		    zfs_i_user_ns(dir), crgetgid(cr));
 	}
 }
 
@@ -145,7 +145,7 @@ zpl_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool flag)
 	int error;
 	fstrans_cookie_t cookie;
 #ifndef HAVE_IOPS_CREATE_USERNS
-	zuserns_t *user_ns = NULL;
+	zuserns_t *user_ns = kcred->user_ns;
 #endif
 
 	crhold(cr);
@@ -192,7 +192,7 @@ zpl_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 	int error;
 	fstrans_cookie_t cookie;
 #ifndef HAVE_IOPS_MKNOD_USERNS
-	zuserns_t *user_ns = NULL;
+	zuserns_t *user_ns = kcred->user_ns;
 #endif
 
 	/*
@@ -234,11 +234,16 @@ zpl_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 
 #ifdef HAVE_TMPFILE
 static int
+#ifndef HAVE_TMPFILE_DENTRY
+zpl_tmpfile(struct user_namespace *userns, struct inode *dir,
+    struct file *file, umode_t mode)
+#else
 #ifdef HAVE_TMPFILE_USERNS
 zpl_tmpfile(struct user_namespace *userns, struct inode *dir,
     struct dentry *dentry, umode_t mode)
 #else
 zpl_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
+#endif
 #endif
 {
 	cred_t *cr = CRED();
@@ -247,7 +252,7 @@ zpl_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 	int error;
 	fstrans_cookie_t cookie;
 #ifndef HAVE_TMPFILE_USERNS
-	zuserns_t *userns = NULL;
+	zuserns_t *userns = kcred->user_ns;
 #endif
 
 	crhold(cr);
@@ -265,11 +270,21 @@ zpl_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (error == 0) {
 		/* d_tmpfile will do drop_nlink, so we should set it first */
 		set_nlink(ip, 1);
+#ifndef HAVE_TMPFILE_DENTRY
+		d_tmpfile(file, ip);
+
+		error = zpl_xattr_security_init(ip, dir,
+		    &file->f_path.dentry->d_name);
+#else
 		d_tmpfile(dentry, ip);
 
 		error = zpl_xattr_security_init(ip, dir, &dentry->d_name);
+#endif
 		if (error == 0)
 			error = zpl_init_acl(ip, dir);
+#ifndef HAVE_TMPFILE_DENTRY
+		error = finish_open_simple(file, error);
+#endif
 		/*
 		 * don't need to handle error here, file is already in
 		 * unlinked set.
@@ -325,7 +340,7 @@ zpl_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	int error;
 	fstrans_cookie_t cookie;
 #ifndef HAVE_IOPS_MKDIR_USERNS
-	zuserns_t *user_ns = NULL;
+	zuserns_t *user_ns = kcred->user_ns;
 #endif
 
 	crhold(cr);
@@ -468,8 +483,20 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 	vap = kmem_zalloc(sizeof (vattr_t), KM_SLEEP);
 	vap->va_mask = ia->ia_valid & ATTR_IATTR_MASK;
 	vap->va_mode = ia->ia_mode;
-	vap->va_uid = KUID_TO_SUID(ia->ia_uid);
-	vap->va_gid = KGID_TO_SGID(ia->ia_gid);
+	if (ia->ia_valid & ATTR_UID)
+#ifdef HAVE_IATTR_VFSID
+		vap->va_uid = zfs_vfsuid_to_uid(user_ns, zfs_i_user_ns(ip),
+		    __vfsuid_val(ia->ia_vfsuid));
+#else
+		vap->va_uid = KUID_TO_SUID(ia->ia_uid);
+#endif
+	if (ia->ia_valid & ATTR_GID)
+#ifdef HAVE_IATTR_VFSID
+		vap->va_gid = zfs_vfsgid_to_gid(user_ns, zfs_i_user_ns(ip),
+		    __vfsgid_val(ia->ia_vfsgid));
+#else
+		vap->va_gid = KGID_TO_SGID(ia->ia_gid);
+#endif
 	vap->va_size = ia->ia_size;
 	vap->va_atime = ia->ia_atime;
 	vap->va_mtime = ia->ia_mtime;
@@ -482,7 +509,7 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 #ifdef HAVE_SETATTR_PREPARE_USERNS
 	error = -zfs_setattr(ITOZ(ip), vap, 0, cr, user_ns);
 #else
-	error = -zfs_setattr(ITOZ(ip), vap, 0, cr, NULL);
+	error = -zfs_setattr(ITOZ(ip), vap, 0, cr, kcred->user_ns);
 #endif
 	if (!error && (ia->ia_valid & ATTR_MODE))
 		error = zpl_chmod_acl(ip);
@@ -510,7 +537,7 @@ zpl_rename2(struct inode *sdip, struct dentry *sdentry,
 	int error;
 	fstrans_cookie_t cookie;
 #ifndef HAVE_IOPS_RENAME_USERNS
-	zuserns_t *user_ns = NULL;
+	zuserns_t *user_ns = kcred->user_ns;
 #endif
 
 	crhold(cr);
@@ -557,7 +584,7 @@ zpl_symlink(struct inode *dir, struct dentry *dentry, const char *name)
 	int error;
 	fstrans_cookie_t cookie;
 #ifndef HAVE_IOPS_SYMLINK_USERNS
-	zuserns_t *user_ns = NULL;
+	zuserns_t *user_ns = kcred->user_ns;
 #endif
 
 	crhold(cr);
@@ -749,7 +776,11 @@ const struct inode_operations zpl_inode_operations = {
 #if defined(HAVE_SET_ACL)
 	.set_acl	= zpl_set_acl,
 #endif /* HAVE_SET_ACL */
+#if defined(HAVE_GET_INODE_ACL)
+	.get_inode_acl	= zpl_get_acl,
+#else
 	.get_acl	= zpl_get_acl,
+#endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
 };
 
@@ -789,7 +820,11 @@ const struct inode_operations zpl_dir_inode_operations = {
 #if defined(HAVE_SET_ACL)
 	.set_acl	= zpl_set_acl,
 #endif /* HAVE_SET_ACL */
+#if defined(HAVE_GET_INODE_ACL)
+	.get_inode_acl	= zpl_get_acl,
+#else
 	.get_acl	= zpl_get_acl,
+#endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
 #ifdef HAVE_RENAME2_OPERATIONS_WRAPPER
 	},
@@ -832,6 +867,10 @@ const struct inode_operations zpl_special_inode_operations = {
 #if defined(HAVE_SET_ACL)
 	.set_acl	= zpl_set_acl,
 #endif /* HAVE_SET_ACL */
+#if defined(HAVE_GET_INODE_ACL)
+	.get_inode_acl	= zpl_get_acl,
+#else
 	.get_acl	= zpl_get_acl,
+#endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
 };

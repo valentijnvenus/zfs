@@ -480,8 +480,18 @@ zil_parse(zilog_t *zilog, zil_parse_blk_func_t *parse_blk_func,
 
 		error = zil_read_log_block(zilog, decrypt, &blk, &next_blk,
 		    lrbuf, &end);
-		if (error != 0)
+		if (error != 0) {
+			if (claimed) {
+				char name[ZFS_MAX_DATASET_NAME_LEN];
+
+				dmu_objset_name(zilog->zl_os, name);
+
+				cmn_err(CE_WARN, "ZFS read log block error %d, "
+				    "dataset %s, seq 0x%llx\n", error, name,
+				    (u_longlong_t)blk_seq);
+			}
 			break;
+		}
 
 		for (lrp = lrbuf; lrp < end; lrp += reclen) {
 			lr_t *lr = (lr_t *)lrp;
@@ -504,10 +514,6 @@ done:
 	zilog->zl_parse_lr_seq = max_lr_seq;
 	zilog->zl_parse_blk_count = blk_count;
 	zilog->zl_parse_lr_count = lr_count;
-
-	ASSERT(!claimed || !(zh->zh_flags & ZIL_CLAIM_LR_SEQ_VALID) ||
-	    (max_blk_seq == claim_blk_seq && max_lr_seq == claim_lr_seq) ||
-	    (decrypt && error == EIO));
 
 	zil_bp_tree_fini(zilog);
 	zio_buf_free(lrbuf, SPA_OLD_MAXBLOCKSIZE);
@@ -881,8 +887,9 @@ zil_create(zilog_t *zilog)
  * txg_wait_synced() here either when keep_first is set, because both
  * zil_create() and zil_destroy() will wait for any in-progress destroys
  * to complete.
+ * Return B_TRUE if there were any entries to replay.
  */
-void
+boolean_t
 zil_destroy(zilog_t *zilog, boolean_t keep_first)
 {
 	const zil_header_t *zh = zilog->zl_header;
@@ -898,7 +905,7 @@ zil_destroy(zilog_t *zilog, boolean_t keep_first)
 	zilog->zl_old_header = *zh;		/* debugging aid */
 
 	if (BP_IS_HOLE(&zh->zh_log))
-		return;
+		return (B_FALSE);
 
 	tx = dmu_tx_create(zilog->zl_os);
 	VERIFY0(dmu_tx_assign(tx, TXG_WAIT));
@@ -931,6 +938,8 @@ zil_destroy(zilog_t *zilog, boolean_t keep_first)
 	mutex_exit(&zilog->zl_lock);
 
 	dmu_tx_commit(tx);
+
+	return (B_TRUE);
 }
 
 void
@@ -3843,8 +3852,9 @@ zil_incr_blks(zilog_t *zilog, const blkptr_t *bp, void *arg, uint64_t claim_txg)
 
 /*
  * If this dataset has a non-empty intent log, replay it and destroy it.
+ * Return B_TRUE if there were any entries to replay.
  */
-void
+boolean_t
 zil_replay(objset_t *os, void *arg,
     zil_replay_func_t *const replay_func[TX_MAX_TYPE])
 {
@@ -3853,8 +3863,7 @@ zil_replay(objset_t *os, void *arg,
 	zil_replay_arg_t zr;
 
 	if ((zh->zh_flags & ZIL_REPLAY_NEEDED) == 0) {
-		zil_destroy(zilog, B_TRUE);
-		return;
+		return (zil_destroy(zilog, B_TRUE));
 	}
 
 	zr.zr_replay = replay_func;
@@ -3877,6 +3886,8 @@ zil_replay(objset_t *os, void *arg,
 	zil_destroy(zilog, B_FALSE);
 	txg_wait_synced(zilog->zl_dmu_pool, zilog->zl_destroy_txg);
 	zilog->zl_replay = B_FALSE;
+
+	return (B_TRUE);
 }
 
 boolean_t

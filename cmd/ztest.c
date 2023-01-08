@@ -1133,14 +1133,14 @@ process_options(int argc, char **argv)
 		const char *invalid_what = "ztest";
 		char *val = zo->zo_alt_ztest;
 		if (0 != access(val, X_OK) ||
-		    (strrchr(val, '/') == NULL && (errno = EINVAL)))
+		    (strrchr(val, '/') == NULL && (errno == EINVAL)))
 			goto invalid;
 
 		int dirlen = strrchr(val, '/') - val;
 		strlcpy(zo->zo_alt_libpath, val,
 		    MIN(sizeof (zo->zo_alt_libpath), dirlen + 1));
 		invalid_what = "library path", val = zo->zo_alt_libpath;
-		if (strrchr(val, '/') == NULL && (errno = EINVAL))
+		if (strrchr(val, '/') == NULL && (errno == EINVAL))
 			goto invalid;
 		*strrchr(val, '/') = '\0';
 		strlcat(val, "/lib", sizeof (zo->zo_alt_libpath));
@@ -2177,6 +2177,7 @@ ztest_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 		 * but not always, because we also want to verify correct
 		 * behavior when the data was not recently read into cache.
 		 */
+		ASSERT(doi.doi_data_block_size);
 		ASSERT0(offset % doi.doi_data_block_size);
 		if (ztest_random(4) != 0) {
 			int prefetch = ztest_random(2) ?
@@ -6312,7 +6313,7 @@ ztest_scrub_impl(spa_t *spa)
 	while (dsl_scan_scrubbing(spa_get_dsl(spa)))
 		txg_wait_synced(spa_get_dsl(spa), 0);
 
-	if (spa_get_errlog_size(spa) > 0)
+	if (spa_approx_errlog_size(spa) > 0)
 		return (ECKSUM);
 
 	ztest_pool_scrubbed = B_TRUE;

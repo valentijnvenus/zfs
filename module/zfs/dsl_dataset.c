@@ -1698,7 +1698,6 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 	dsl_dataset_phys_t *dsphys;
 	uint64_t dsobj, crtxg;
 	objset_t *mos = dp->dp_meta_objset;
-	static zil_header_t zero_zil __maybe_unused;
 	objset_t *os __maybe_unused;
 
 	ASSERT(RRW_WRITE_HELD(&dp->dp_config_rwlock));
@@ -1757,6 +1756,21 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 		if (zfeature_active(f, ds->ds_feature[f])) {
 			dsl_dataset_activate_feature(dsobj, f,
 			    ds->ds_feature[f], tx);
+		}
+	}
+
+	/*
+	 * We are not allowed to dirty a filesystem when done receiving
+	 * a snapshot. In this case the flag SPA_FEATURE_LARGE_BLOCKS will
+	 * not be set and a subsequent encrypted raw send will fail. Hence
+	 * activate this feature if needed here.
+	 */
+	for (spa_feature_t f = 0; f < SPA_FEATURES; f++) {
+		if (zfeature_active(f, ds->ds_feature_activation[f]) &&
+		    !(zfeature_active(f, ds->ds_feature[f]))) {
+			dsl_dataset_activate_feature(dsobj, f,
+			    ds->ds_feature_activation[f], tx);
+			ds->ds_feature[f] = ds->ds_feature_activation[f];
 		}
 	}
 

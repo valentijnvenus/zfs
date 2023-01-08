@@ -5543,7 +5543,7 @@ spa_get_stats(const char *name, nvlist_t **config,
 
 			fnvlist_add_uint64(*config,
 			    ZPOOL_CONFIG_ERRCOUNT,
-			    spa_get_errlog_size(spa));
+			    spa_approx_errlog_size(spa));
 
 			if (spa_suspended(spa)) {
 				fnvlist_add_uint64(*config,
@@ -6819,10 +6819,12 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 		return (spa_vdev_exit(spa, newrootvd, txg, error));
 
 	/*
-	 * Spares can't replace logs
+	 * log, dedup and special vdevs should not be replaced by spares.
 	 */
-	if (oldvd->vdev_top->vdev_islog && newvd->vdev_isspare)
+	if ((oldvd->vdev_top->vdev_alloc_bias != VDEV_BIAS_NONE ||
+	    oldvd->vdev_top->vdev_islog) && newvd->vdev_isspare) {
 		return (spa_vdev_exit(spa, newrootvd, txg, ENOTSUP));
+	}
 
 	/*
 	 * A dRAID spare can only replace a child of its parent dRAID vdev.
